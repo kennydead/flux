@@ -8,10 +8,11 @@ export type SetupStep = "license" | "docker" | "provider" | "auth";
 
 interface Props {
   onComplete: () => void;
+  initialStep?: SetupStep;
 }
 
-export default function SetupFlow({ onComplete }: Props) {
-  const [step, setStep] = useState<SetupStep>("license");
+export default function SetupFlow({ onComplete, initialStep = "license" }: Props) {
+  const [step, setStep] = useState<SetupStep>(initialStep);
 
   switch (step) {
     case "license":
