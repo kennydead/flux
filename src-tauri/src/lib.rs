@@ -50,12 +50,12 @@ fn check_license() -> bool {
     farm_dir().join("logs").join("license_key.txt").exists()
 }
 
-const LICENSE_SERVER: &str = "https://oywppqdqfcypawrthfox.supabase.co/functions/v1";
+const LICENSE_ENDPOINT: &str = "https://oywppqdqfcypawrthfox.supabase.co/functions/v1/validate-license";
 
 #[tauri::command]
 async fn validate_license_key(key: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        match ureq::post(&format!("{LICENSE_SERVER}/validate"))
+        match ureq::post(LICENSE_ENDPOINT)
             .timeout(std::time::Duration::from_secs(8))
             .send_json(serde_json::json!({ "key": key }))
         {
