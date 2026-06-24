@@ -16,6 +16,7 @@ interface Step {
 }
 
 const INITIAL_STEPS: Step[] = [
+  { id: "auth",    label: "Verifying Claude account",   state: "pending" },
   { id: "extract",  label: "Setting up farm directory",  state: "pending" },
   { id: "pull",     label: "Pulling latest images",      state: "pending" },
   { id: "start",    label: "Starting services",          state: "pending" },
@@ -44,7 +45,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
     if (import.meta.env.DEV) {
       for (const step of INITIAL_STEPS) {
         set(step.id, "active");
-        await delay(700);
+        await delay(600);
         set(step.id, "done");
       }
       setTimeout(onReady, 600);
@@ -52,6 +53,16 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
     }
 
     try {
+      // Verify Claude is authenticated before starting anything
+      set("auth", "active");
+      const isAuth = await invoke<boolean>("check_claude_auth");
+      if (!isAuth) {
+        set("auth", "error");
+        setError("Claude account not authenticated. Please sign in again.");
+        return;
+      }
+      set("auth", "done");
+
       // Extract bundled files → ~/farm/
       set("extract", "active");
       const farmDir = await invoke<string>("extract_resources");
