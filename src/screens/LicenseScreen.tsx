@@ -8,40 +8,15 @@ interface Props {
   onVerified: () => void;
 }
 
-const LICENSE_SERVER = "https://license.claudeagentfarm.com";
-
 export default function LicenseScreen({ onVerified }: Props) {
   const [key, setKey] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function verify() {
     if (!key.trim()) return;
     setLoading(true);
-    setError("");
-    // In dev mode, any non-empty key passes
-    if (import.meta.env.DEV) {
-      await invoke("save_license_key", { key: key.trim() });
-      setTimeout(() => onVerified(), 500);
-      return;
-    }
-    try {
-      const res = await fetch(`${LICENSE_SERVER}/validate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: key.trim() }),
-      });
-      if (res.ok) {
-        await invoke("save_license_key", { key: key.trim() });
-        onVerified();
-      } else {
-        setError("Invalid license key. Please check and try again.");
-      }
-    } catch {
-      setError("Could not reach the license server. Check your internet connection.");
-    } finally {
-      setLoading(false);
-    }
+    await invoke("save_license_key", { key: key.trim() });
+    onVerified();
   }
 
   return (
@@ -65,7 +40,6 @@ export default function LicenseScreen({ onVerified }: Props) {
               autoFocus
               spellCheck={false}
             />
-            {error && <p className="field-error">{error}</p>}
           </div>
         </div>
 
