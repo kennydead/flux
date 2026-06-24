@@ -25,6 +25,7 @@ bash start.sh
    ```bash
    bash ~/farm/setup.sh
    ```
+   The script opens a shell inside the agent container. Run `claude auth login`, open the URL shown in your browser, log in, then type `exit`.
 3. Go to the dashboard → Agents page and spawn your agents
 
 ---
@@ -63,7 +64,13 @@ Open **http://localhost:5174** and follow the setup wizard.
 bash ~/farm/setup.sh
 ```
 
-A browser window will open. Log in with your claude.ai account.
+The script opens a shell inside the agent container. At the prompt, run:
+
+```bash
+claude auth login
+```
+
+A URL will appear — open it in your browser and log in with your claude.ai account. When done, type `exit`.
 
 **Step 6 — Spawn agents**
 
