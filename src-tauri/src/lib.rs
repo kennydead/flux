@@ -12,6 +12,13 @@ fn farm_dir() -> PathBuf {
     PathBuf::from(home).join("farm")
 }
 
+// GUI apps on Mac inherit a minimal PATH — augment it so credential helpers are found
+fn augmented_path() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let extras = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    if current.is_empty() { extras.to_string() } else { format!("{extras}:{current}") }
+}
+
 // On Mac, GUI apps may not inherit PATH — check known Docker Desktop locations
 fn docker_bin() -> String {
     #[cfg(target_os = "macos")]
@@ -82,6 +89,7 @@ async fn run_command(program: String, args: Vec<String>) -> Result<String, Strin
     tauri::async_runtime::spawn_blocking(move || {
         let output = std::process::Command::new(&bin)
             .args(&args)
+            .env("PATH", augmented_path())
             .output()
             .map_err(|e| format!("Failed to run {bin}: {e}"))?;
         if output.status.success() {
@@ -105,6 +113,7 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
         let output = std::process::Command::new(&docker)
             .args(&full_args)
             .current_dir(farm_dir())
+            .env("PATH", augmented_path())
             .output()
             .map_err(|e| format!("Failed to run docker compose: {e}"))?;
         if output.status.success() {
