@@ -369,7 +369,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let show  = MenuItem::with_id(app, "show",  "Open Flux",      true, None::<&str>)?;
+            let show  = MenuItem::with_id(app, "show",  "Show Flux",      true, None::<&str>)?;
             let stop  = MenuItem::with_id(app, "stop",  "Stop Farm",       true, None::<&str>)?;
             let reset = MenuItem::with_id(app, "reset", "Reset Setup…",    true, None::<&str>)?;
             let quit  = MenuItem::with_id(app, "quit",  "Quit",            true, None::<&str>)?;
