@@ -13,7 +13,7 @@ const FEATURES = [
   { icon: "🔧", label: "Built for real software projects" },
 ];
 
-export default function HomeScreen({ onStart, isConfigured }: Props) {
+export default function HomeScreen({ onStart }: Props) {
   return (
     <div className="home">
       {/* Hero */}
@@ -43,12 +43,6 @@ export default function HomeScreen({ onStart, isConfigured }: Props) {
 
       {/* CTA */}
       <div className="home-cta">
-        {isConfigured && (
-          <div className="home-ready">
-            <span className="home-ready-dot" />
-            Ready to start
-          </div>
-        )}
         <Button onClick={onStart} fullWidth>
           Get Started
         </Button>

@@ -1,6 +1,7 @@
 .home {
   display: flex;
   flex-direction: column;
+  align-items: center;
   height: 100vh;
   padding: 0 28px 20px;
   box-sizing: border-box;
@@ -8,14 +9,17 @@
   overflow: hidden;
 }
 
-/* Constrain content to readable max-width, centered — footer stays full width */
+/* Constrain content to readable max-width — footer stays full width */
 .home-hero,
 .home-features,
 .home-cta {
   width: 100%;
   max-width: 360px;
-  margin-left: auto;
-  margin-right: auto;
+}
+
+.home-footer {
+  width: 100%;
+  align-self: stretch;
 }
 
 /* ── Hero ─────────────────────────────────────── */
@@ -129,29 +133,6 @@
   margin-top: 20px;
 }
 
-.home-ready {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--success, #3ecf8e);
-  font-weight: 500;
-}
-
-.home-ready-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success, #3ecf8e);
-  box-shadow: 0 0 6px var(--success, #3ecf8e);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.45; }
-}
 
 /* ── Footer ───────────────────────────────────── */
 .home-footer {
