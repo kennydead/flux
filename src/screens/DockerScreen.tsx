@@ -9,9 +9,12 @@ interface Props {
   onReady: () => void;
 }
 
-type DockerState = "checking" | "not-found" | "not-running" | "ready";
+type DockerState = "checking" | "no-wsl" | "not-found" | "not-running" | "ready";
 
 async function checkDocker(): Promise<DockerState> {
+  const wslOk = await invoke<boolean>("check_wsl_installed");
+  if (!wslOk) return "no-wsl";
+
   try {
     const out = await invoke<string>("run_command", {
       program: "docker",
@@ -60,9 +63,21 @@ export default function DockerScreen({ onReady }: Props) {
               <span className="status-text">Checking for Docker…</span>
             </div>
           )}
+          {state === "no-wsl" && (
+            <div className="docker-card">
+              <p><strong>Step 1:</strong> Install WSL (Windows Subsystem for Linux)</p>
+              <p className="screen-footnote" style={{ marginTop: 8 }}>
+                Open <strong>PowerShell as Administrator</strong> and run:
+              </p>
+              <code className="screen-code">wsl --install --no-distribution</code>
+              <p className="screen-footnote" style={{ marginTop: 8 }}>
+                Then <strong>restart your computer</strong> and reopen Flux.
+              </p>
+            </div>
+          )}
           {state === "not-found" && (
             <div className="docker-card">
-              <p>Docker Desktop is not installed on this machine.</p>
+              <p><strong>Step 2:</strong> Install Docker Desktop</p>
               <Button
                 variant="ghost"
                 onClick={() => openUrl("https://www.docker.com/products/docker-desktop/")}

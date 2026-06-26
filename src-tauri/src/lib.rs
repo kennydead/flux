@@ -269,6 +269,23 @@ async fn extract_resources(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn check_wsl_installed() -> bool {
+    #[cfg(not(target_os = "windows"))]
+    return true; // non-Windows never needs WSL
+
+    #[cfg(target_os = "windows")]
+    return tauri::async_runtime::spawn_blocking(|| {
+        std::process::Command::new("wsl")
+            .args(["--status"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+}
+
+#[tauri::command]
 async fn check_docker_running() -> bool {
     let bin = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
@@ -581,6 +598,7 @@ pub fn run() {
             run_command,
             run_docker_compose,
             run_detached,
+            check_wsl_installed,
             check_docker_running,
             check_claude_auth,
             start_claude_auth,

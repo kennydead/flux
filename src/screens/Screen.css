@@ -151,6 +151,20 @@
   line-height: 1.6;
 }
 
+.screen-code {
+  display: block;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--accent);
+  user-select: text;
+  width: 100%;
+  text-align: left;
+}
+
 /* Provider list */
 .provider-list {
   display: flex;
