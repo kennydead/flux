@@ -21,8 +21,9 @@ export default function HomeScreen({ onStart }: Props) {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    if (import.meta.env.DEV) return;
-    invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+    if (!import.meta.env.DEV) {
+      invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+    }
 
     const checkUpdate = () =>
       invoke<string | null>("check_for_update").then(setUpdateVersion).catch(() => {});
