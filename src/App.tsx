@@ -40,15 +40,17 @@ export default function App() {
     window.location.reload();
   }
 
+  const [isConfigured, setIsConfigured] = useState(false);
+
   useEffect(() => {
-    if (import.meta.env.DEV) { setState("home"); return; }
+    if (import.meta.env.DEV) { setIsConfigured(true); setState("home"); return; }
     async function init() {
       if (await isFarmRunning()) { setState("running"); return; }
       const hasLicense = await invoke<boolean>("check_license");
-      if (!hasLicense) { setInitialStep("license"); setState("setup"); return; }
+      if (!hasLicense) { setState("home"); return; }
       const isAuth = await invoke<boolean>("check_claude_auth");
-      if (!isAuth) { setInitialStep("docker"); setState("setup"); return; }
-      // Everything is configured — show home screen, let user decide when to start
+      if (!isAuth) { setInitialStep("docker"); setState("home"); return; }
+      setIsConfigured(true);
       setState("home");
     }
     init();
@@ -61,8 +63,8 @@ export default function App() {
           <span className="app-loading-spinner" />
         </div>
       )}
-      {state === "home"    && <HomeScreen onStart={() => setState("startup")} />}
-      {state === "setup"   && <SetupFlow initialStep={initialStep} onComplete={() => setState("home")} />}
+      {state === "home"    && <HomeScreen isConfigured={isConfigured} onStart={() => setState(isConfigured ? "startup" : "setup")} />}
+      {state === "setup"   && <SetupFlow initialStep={initialStep} onComplete={() => { setIsConfigured(true); setState("home"); }} />}
       {state === "startup" && <StartupScreen onReady={() => setState("running")} onResetSetup={() => setState("setup")} />}
       {state === "running" && <RunningScreen onBack={() => setState("home")} />}
 

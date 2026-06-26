@@ -4,9 +4,10 @@ import "./HomeScreen.css";
 
 interface Props {
   onStart: () => void;
+  isConfigured: boolean;
 }
 
-export default function HomeScreen({ onStart }: Props) {
+export default function HomeScreen({ onStart, isConfigured }: Props) {
   return (
     <Layout>
       <div className="home">
@@ -28,13 +29,15 @@ export default function HomeScreen({ onStart }: Props) {
           <p className="home-subtitle">AI Agent Farm</p>
         </div>
 
-        <div className="home-status">
-          <div className="home-status-dot" />
-          <span>Ready to start</span>
-        </div>
+        {isConfigured && (
+          <div className="home-status">
+            <div className="home-status-dot" />
+            <span>Ready to start</span>
+          </div>
+        )}
 
         <Button onClick={onStart} fullWidth>
-          Start Farm
+          {isConfigured ? "Start Farm" : "Get Started"}
         </Button>
       </div>
     </Layout>
