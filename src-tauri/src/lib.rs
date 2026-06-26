@@ -67,7 +67,7 @@ fn python_bin() -> String {
 
 // Suppress the black console window on Windows for all subprocess calls
 fn silent_command(program: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(program);
+    let cmd = std::process::Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
