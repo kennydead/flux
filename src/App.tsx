@@ -23,6 +23,8 @@ export default function App() {
   const [initialStep, setInitialStep] = useState<SetupStep>("license");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
     const unlisten = listen("reset-requested", () => setShowResetConfirm(true));
@@ -30,9 +32,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen("farm-stopped", () => setState("home"));
+    const unlisten = listen("stop-requested", () => setShowStopConfirm(true));
     return () => { unlisten.then((f) => f()); };
   }, []);
+
+  async function doStop() {
+    setStopping(true);
+    await invoke("stop_farm");
+    setShowStopConfirm(false);
+    setStopping(false);
+    setState("home");
+  }
 
   async function doReset() {
     setResetting(true);
@@ -67,6 +77,34 @@ export default function App() {
       {state === "setup"   && <SetupFlow initialStep={initialStep} onComplete={() => { setIsConfigured(true); setState("startup"); }} />}
       {state === "startup" && <StartupScreen onReady={() => setState("running")} onResetSetup={() => setState("setup")} />}
       {state === "running" && <RunningScreen onBack={() => setState("home")} />}
+
+      {showStopConfirm && (
+        <div className="reset-overlay">
+          <div className="reset-dialog">
+            <h2>Stop Farm?</h2>
+            <p>
+              This will stop all running agents and the dashboard.
+              You can restart from the home screen.
+            </p>
+            <div className="reset-actions">
+              <button
+                className="reset-btn-cancel"
+                onClick={() => setShowStopConfirm(false)}
+                disabled={stopping}
+              >
+                Cancel
+              </button>
+              <button
+                className="reset-btn-confirm"
+                onClick={doStop}
+                disabled={stopping}
+              >
+                {stopping ? "Stopping…" : "Stop Farm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showResetConfirm && (
         <div className="reset-overlay">

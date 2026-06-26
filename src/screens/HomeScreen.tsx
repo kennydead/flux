@@ -37,7 +37,7 @@ export default function HomeScreen({ onStart, isConfigured }: Props) {
         )}
 
         <Button onClick={onStart} fullWidth>
-          {isConfigured ? "Start Farm" : "Get Started"}
+          Get Started
         </Button>
       </div>
     </Layout>

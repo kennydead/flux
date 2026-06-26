@@ -307,6 +307,20 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn stop_farm() -> Result<(), String> {
+    let farm = farm_dir();
+    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
+    let docker = docker_bin();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = std::process::Command::new(&docker)
+            .args(["compose", "-f", &compose_file, "down"])
+            .env("PATH", augmented_path())
+            .output();
+    }).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn reset_setup() -> Result<(), String> {
     let farm = farm_dir();
     let docker = docker_bin();
@@ -367,34 +381,27 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.set_always_on_top(true);
                             let _ = w.show();
                             let _ = w.set_focus();
+                            let _ = w.set_always_on_top(false);
                             #[cfg(target_os = "macos")]
-                            let _ = app.show(); // activates the app in the macOS dock
+                            let _ = app.show();
                         }
                     }
                     "stop" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let farm = farm_dir();
-                            let compose_file = farm.join("docker-compose.yml")
-                                .to_string_lossy()
-                                .into_owned();
-                            let docker = docker_bin();
-                            let _ = std::process::Command::new(&docker)
-                                .args(["compose", "-f", &compose_file, "down"])
-                                .current_dir(&farm)
-                                .env("PATH", augmented_path())
-                                .output();
-                            // Notify frontend so it can show a stopped state
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                                #[cfg(target_os = "macos")]
-                                let _ = app.show();
-                                let _ = w.emit("farm-stopped", ());
-                            }
-                        });
+                        // Ask frontend to confirm before stopping
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.set_always_on_top(true);
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.set_always_on_top(false);
+                            #[cfg(target_os = "macos")]
+                            let _ = app.show();
+                            let _ = w.emit("stop-requested", ());
+                        }
                     }
                     "reset" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -457,6 +464,7 @@ pub fn run() {
             complete_claude_auth,
             check_farm_running,
             check_dashboard_health,
+            stop_farm,
             reset_setup,
         ])
         .run(tauri::generate_context!())
