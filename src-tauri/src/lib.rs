@@ -10,6 +10,10 @@ use std::sync::Mutex;
 const FARM_VERSION: &str = "v0.1.1";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
 
+fn agent_image() -> String {
+    format!("{}/agent:{}", IMAGE_REGISTRY, FARM_VERSION)
+}
+
 struct AuthSession {
     stdin: Option<std::process::ChildStdin>,
     child: std::process::Child,
@@ -94,7 +98,7 @@ async fn check_claude_auth() -> bool {
                 "run", "--rm", "--platform", "linux/amd64",
                 "--entrypoint", "",
                 "-v", "claudeagentfarm_claude-home:/home/agent",
-                AGENT_IMAGE, "claude", "auth", "status", "--json",
+                agent_image().as_str(), "claude", "auth", "status", "--json",
             ])
             .env("PATH", augmented_path())
             .output()
@@ -114,7 +118,7 @@ fn start_claude_auth(app: AppHandle) -> Result<String, String> {
             "run", "--rm", "-i", "--platform", "linux/amd64",
             "--entrypoint", "",
             "-v", "claudeagentfarm_claude-home:/home/agent",
-            AGENT_IMAGE, "claude", "auth", "login",
+            agent_image().as_str(), "claude", "auth", "login",
         ])
         .env("PATH", augmented_path())
         .stdin(std::process::Stdio::piped())
@@ -191,7 +195,7 @@ fn complete_claude_auth(app: AppHandle, code: String) -> Result<(), String> {
             "run", "--rm", "--platform", "linux/amd64",
             "--entrypoint", "",
             "-v", "claudeagentfarm_claude-home:/home/agent",
-            AGENT_IMAGE, "claude", "auth", "status", "--json",
+            agent_image().as_str(), "claude", "auth", "status", "--json",
         ])
         .env("PATH", augmented_path())
         .output()
