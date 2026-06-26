@@ -23,7 +23,13 @@ export default function HomeScreen({ onStart }: Props) {
   useEffect(() => {
     if (import.meta.env.DEV) return;
     invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
-    invoke<string | null>("check_for_update").then(setUpdateVersion).catch(() => {});
+
+    const checkUpdate = () =>
+      invoke<string | null>("check_for_update").then(setUpdateVersion).catch(() => {});
+
+    checkUpdate();
+    const interval = setInterval(checkUpdate, 60 * 60 * 1000); // every hour
+    return () => clearInterval(interval);
   }, []);
 
   function toggleAutostart(e: React.ChangeEvent<HTMLInputElement>) {
