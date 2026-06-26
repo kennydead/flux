@@ -56,6 +56,18 @@ fn python_bin() -> String {
     "python3".to_string()
 }
 
+// Suppress the black console window on Windows for all subprocess calls
+fn silent_command(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 #[tauri::command]
 fn get_farm_dir() -> String {
     farm_dir().to_string_lossy().into_owned()
@@ -93,7 +105,7 @@ async fn check_dashboard_health() -> bool {
 async fn check_claude_auth() -> bool {
     let docker = docker_bin();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new(&docker)
+        silent_command(&docker)
             .args([
                 "run", "--rm", "--platform", "linux/amd64",
                 "--entrypoint", "",
@@ -113,7 +125,7 @@ async fn check_claude_auth() -> bool {
 #[tauri::command]
 fn start_claude_auth(app: AppHandle) -> Result<String, String> {
     let docker = docker_bin();
-    let mut child = std::process::Command::new(&docker)
+    let mut child = silent_command(&docker)
         .args([
             "run", "--rm", "-i", "--platform", "linux/amd64",
             "--entrypoint", "",
@@ -190,7 +202,7 @@ fn complete_claude_auth(app: AppHandle, code: String) -> Result<(), String> {
 
     // Verify auth actually succeeded rather than trusting the exit code
     let docker = docker_bin();
-    let out = std::process::Command::new(&docker)
+    let out = silent_command(&docker)
         .args([
             "run", "--rm", "--platform", "linux/amd64",
             "--entrypoint", "",
@@ -287,7 +299,7 @@ async fn check_wsl_installed() -> bool {
 
     #[cfg(target_os = "windows")]
     return tauri::async_runtime::spawn_blocking(|| {
-        std::process::Command::new("wsl")
+        silent_command("wsl")
             .args(["--status"])
             .output()
             .map(|o| o.status.success())
@@ -301,7 +313,7 @@ async fn check_wsl_installed() -> bool {
 fn install_wsl() {
     // Opens an elevated PowerShell that runs wsl --install --no-distribution
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("powershell")
+    let _ = silent_command("powershell")
         .args([
             "-Command",
             "Start-Process powershell -ArgumentList '-NoExit','-Command','wsl --install --no-distribution' -Verb RunAs",
@@ -313,7 +325,7 @@ fn install_wsl() {
 async fn check_docker_running() -> bool {
     let bin = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new(&bin)
+        silent_command(&bin)
             .args(["info", "--format", "{{.ServerVersion}}"])
             .env("PATH", augmented_path())
             .output()
@@ -328,7 +340,7 @@ async fn check_docker_running() -> bool {
 async fn run_command(program: String, args: Vec<String>) -> Result<String, String> {
     let bin = if program == "docker" { docker_bin() } else if program == "python3" { python_bin() } else { program };
     tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new(&bin)
+        let output = silent_command(&bin)
             .args(&args)
             .env("PATH", augmented_path())
             .output()
@@ -351,7 +363,7 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
     full_args.extend(sub_args);
     let docker = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new(&docker)
+        let output = silent_command(&docker)
             .args(&full_args)
             .current_dir(farm_dir())
             .env("PATH", augmented_path())
@@ -373,7 +385,7 @@ async fn stop_farm() -> Result<(), String> {
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     let docker = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = std::process::Command::new(&docker)
+        let _ = silent_command(&docker)
             .args(["compose", "-f", &compose_file, "down"])
             .env("PATH", augmented_path())
             .output();
@@ -391,7 +403,7 @@ async fn soft_reset() -> Result<(), String> {
     let _ = tauri::async_runtime::spawn_blocking({
         let docker = docker.clone();
         move || {
-            let _ = std::process::Command::new(&docker)
+            let _ = silent_command(&docker)
                 .args(["compose", "-f", &compose_file, "down"])
                 .env("PATH", augmented_path())
                 .output();
@@ -414,7 +426,7 @@ async fn reset_setup() -> Result<(), String> {
     let _ = tauri::async_runtime::spawn_blocking({
         let docker = docker.clone();
         move || {
-            let _ = std::process::Command::new(&docker)
+            let _ = silent_command(&docker)
                 .args(["compose", "-f", &compose_file, "down"])
                 .env("PATH", augmented_path())
                 .output();
@@ -426,7 +438,7 @@ async fn reset_setup() -> Result<(), String> {
 
     // Remove Claude auth volume
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let _ = std::process::Command::new(&docker)
+        let _ = silent_command(&docker)
             .args(["volume", "rm", "-f", "claudeagentfarm_claude-home"])
             .env("PATH", augmented_path())
             .output();
@@ -441,7 +453,7 @@ async fn confirm_quit(app: AppHandle) {
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     let docker = docker_bin();
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let _ = std::process::Command::new(&docker)
+        let _ = silent_command(&docker)
             .args(["compose", "-f", &compose_file, "down"])
             .env("PATH", augmented_path())
             .output();
@@ -488,7 +500,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 #[tauri::command]
 fn run_detached(program: String, args: Vec<String>) -> Result<(), String> {
     let bin = if program == "python3" { python_bin() } else { program };
-    std::process::Command::new(&bin)
+    silent_command(&bin)
         .args(&args)
         .spawn()
         .map_err(|e| format!("Failed to spawn {bin}: {e}"))?;
