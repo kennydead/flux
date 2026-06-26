@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import SetupFlow from "./screens/SetupFlow";
 import { SetupStep } from "./screens/SetupFlow";
 import StartupScreen from "./screens/StartupScreen";
@@ -19,6 +20,18 @@ async function isFarmRunning(): Promise<boolean> {
 export default function App() {
   const [state, setState] = useState<AppState>("loading");
   const [initialStep, setInitialStep] = useState<SetupStep>("license");
+
+  useEffect(() => {
+    const unlisten = listen("reset-requested", async () => {
+      const confirmed = window.confirm(
+        "This will stop the farm, remove your license key, and sign out of Claude.\n\nContinue?"
+      );
+      if (!confirmed) return;
+      await invoke("reset_setup");
+      window.location.reload();
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
 
   useEffect(() => {
     if (import.meta.env.DEV) { setState("setup"); return; }

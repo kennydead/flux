@@ -306,6 +306,37 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn reset_setup() -> Result<(), String> {
+    let farm = farm_dir();
+    let docker = docker_bin();
+
+    // Stop running containers
+    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
+    let _ = tauri::async_runtime::spawn_blocking({
+        let docker = docker.clone();
+        move || {
+            let _ = std::process::Command::new(&docker)
+                .args(["compose", "-f", &compose_file, "down"])
+                .env("PATH", augmented_path())
+                .output();
+        }
+    }).await;
+
+    // Remove license key
+    let _ = std::fs::remove_file(farm.join("logs").join("license_key.txt"));
+
+    // Remove Claude auth volume
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _ = std::process::Command::new(&docker)
+            .args(["volume", "rm", "-f", "claudeagentfarm_claude-home"])
+            .env("PATH", augmented_path())
+            .output();
+    }).await;
+
+    Ok(())
+}
+
+#[tauri::command]
 fn run_detached(program: String, args: Vec<String>) -> Result<(), String> {
     let bin = if program == "python3" { python_bin() } else { program };
     std::process::Command::new(&bin)
@@ -323,10 +354,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Open Flux", true, None::<&str>)?;
-            let stop = MenuItem::with_id(app, "stop", "Stop Farm", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &stop, &quit])?;
+            let show  = MenuItem::with_id(app, "show",  "Open Flux",      true, None::<&str>)?;
+            let stop  = MenuItem::with_id(app, "stop",  "Stop Farm",       true, None::<&str>)?;
+            let reset = MenuItem::with_id(app, "reset", "Reset Setup…",    true, None::<&str>)?;
+            let quit  = MenuItem::with_id(app, "quit",  "Quit",            true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &stop, &reset, &quit])?;
 
             TrayIconBuilder::new()
                 .menu(&menu)
@@ -350,6 +382,13 @@ pub fn run() {
                                 .current_dir(&farm)
                                 .output();
                         });
+                    }
+                    "reset" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.emit("reset-requested", ());
+                        }
                     }
                     "quit" => {
                         let app = app.clone();
@@ -405,6 +444,7 @@ pub fn run() {
             complete_claude_auth,
             check_farm_running,
             check_dashboard_health,
+            reset_setup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application")
