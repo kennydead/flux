@@ -269,6 +269,21 @@ async fn extract_resources(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn check_docker_running() -> bool {
+    let bin = docker_bin();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new(&bin)
+            .args(["info", "--format", "{{.ServerVersion}}"])
+            .env("PATH", augmented_path())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[tauri::command]
 async fn run_command(program: String, args: Vec<String>) -> Result<String, String> {
     let bin = if program == "docker" { docker_bin() } else if program == "python3" { python_bin() } else { program };
     tauri::async_runtime::spawn_blocking(move || {
@@ -530,6 +545,7 @@ pub fn run() {
             run_command,
             run_docker_compose,
             run_detached,
+            check_docker_running,
             check_claude_auth,
             start_claude_auth,
             complete_claude_auth,

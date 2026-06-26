@@ -59,10 +59,8 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
 
       // Verify Claude is authenticated before starting anything
       set("auth", "active");
-      // Check Docker is actually running before trying Claude auth
-      try {
-        await invoke("run_command", { program: "docker", args: ["info"] });
-      } catch {
+      const dockerRunning = await invoke<boolean>("check_docker_running");
+      if (!dockerRunning) {
         set("auth", "error");
         setError("Docker is not running. Please start Docker Desktop and try again.");
         return;
