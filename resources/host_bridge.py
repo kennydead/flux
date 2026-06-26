@@ -28,16 +28,28 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
     if project_id:
         env_flags += f" -e DASHBOARD_PROJECT_ID={project_id}"
 
-    docker_cmd = (
-        f"docker run -it --rm --platform linux/amd64 "
-        f"--network claudeagentfarm_default "
-        f"{env_flags} "
-        f"-v \"{workspace}\":/planning-workspace "
-        f"{IMAGE} python -m agent.discuss"
-    )
+    # claude-home volume carries the Claude Code auth credentials
+    docker_args = [
+        "docker", "run", "-it", "--rm", "--platform", "linux/amd64",
+        "--network", "claudeagentfarm_default",
+        "-e", "DASHBOARD_URL=http://dashboard-backend:8090",
+        "-v", "claudeagentfarm_claude-home:/home/agent",
+        "-v", f"{workspace}:/planning-workspace",
+        IMAGE, "python", "-m", "agent.discuss",
+    ]
+    if project_id:
+        docker_args = docker_args[:6] + ["-e", f"DASHBOARD_PROJECT_ID={project_id}"] + docker_args[6:]
+
+    # Plain string form for shells that need it (Mac/Linux)
+    def _shell_str():
+        return " ".join(
+            f'"{a}"' if (" " in a or ":" in a) else a
+            for a in docker_args
+        )
 
     if SYSTEM == "Darwin":
-        safe = docker_cmd.replace("\\", "\\\\").replace('"', '\\"')
+        cmd = _shell_str()
+        safe = cmd.replace("\\", "\\\\").replace('"', '\\"')
         script = (
             f'tell application "Terminal" to activate\n'
             f'tell application "Terminal" to do script "{safe}"'
@@ -45,26 +57,33 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
         subprocess.Popen(["osascript", "-e", script])
 
     elif IS_WSL:
+        # Pass args as a list to wt.exe to avoid Windows quoting issues
         try:
-            subprocess.Popen(
-                ["wt.exe", "-w", "0", "nt", "--", "bash", "-c", f"{docker_cmd}; exec bash"]
-            )
+            subprocess.Popen(["wt.exe", "-w", "0", "nt", "--"] + docker_args)
         except FileNotFoundError:
-            subprocess.Popen(
-                ["cmd.exe", "/c", f'start "Farm Discuss" bash -c "{docker_cmd}"']
-            )
+            subprocess.Popen(["cmd.exe", "/c", "start", "Farm Discuss"] + docker_args)
 
     elif SYSTEM == "Windows":
-        subprocess.Popen(f'start "Farm Discuss" cmd /k "{docker_cmd}"', shell=True)
+        # Write a temp .bat file to avoid embedded-quote issues in cmd /k "..."
+        import tempfile
+        bat = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".bat", delete=False, dir=project_dir
+        )
+        bat.write("@echo off\n" + " ".join(docker_args) + "\npause\n")
+        bat.close()
+        subprocess.Popen(
+            ["cmd.exe", "/c", "start", "Farm Discuss", "cmd", "/k", bat.name]
+        )
 
     else:
         display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
         if not display:
             print("Host bridge: no display detected — cannot open terminal")
             return
+        cmd = _shell_str()
         for term in [
-            ["gnome-terminal", "--", "bash", "-c", f"{docker_cmd}; exec bash"],
-            ["xterm", "-e", f"bash -c '{docker_cmd}; exec bash'"],
+            ["gnome-terminal", "--", "bash", "-c", f"{cmd}; exec bash"],
+            ["xterm", "-e", f"bash -c '{cmd}; exec bash'"],
         ]:
             try:
                 subprocess.Popen(term)
