@@ -369,10 +369,13 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
+                            #[cfg(target_os = "macos")]
+                            let _ = app.show(); // activates the app in the macOS dock
                         }
                     }
                     "stop" => {
-                        tauri::async_runtime::spawn(async {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
                             let farm = farm_dir();
                             let compose_file = farm.join("docker-compose.yml")
                                 .to_string_lossy()
@@ -381,7 +384,16 @@ pub fn run() {
                             let _ = std::process::Command::new(&docker)
                                 .args(["compose", "-f", &compose_file, "down"])
                                 .current_dir(&farm)
+                                .env("PATH", augmented_path())
                                 .output();
+                            // Notify frontend so it can show a stopped state
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                                #[cfg(target_os = "macos")]
+                                let _ = app.show();
+                                let _ = w.emit("farm-stopped", ());
+                            }
                         });
                     }
                     "reset" => {

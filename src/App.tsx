@@ -24,9 +24,12 @@ export default function App() {
   const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
-    const unlisten = listen("reset-requested", () => {
-      setShowResetConfirm(true);
-    });
+    const unlisten = listen("reset-requested", () => setShowResetConfirm(true));
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen("farm-stopped", () => setState("startup"));
     return () => { unlisten.then((f) => f()); };
   }, []);
 
