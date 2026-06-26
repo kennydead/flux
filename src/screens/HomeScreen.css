@@ -209,11 +209,32 @@
   margin-top: 16px;
 }
 
+.home-version-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .home-version {
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+.home-check-update {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.home-check-update:hover { opacity: 1; }
+.home-check-update:disabled { opacity: 0.4; cursor: default; }
 
 .home-links {
   display: flex;

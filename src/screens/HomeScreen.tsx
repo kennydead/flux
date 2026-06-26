@@ -22,6 +22,7 @@ export default function HomeScreen({ onStart }: Props) {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -39,6 +40,17 @@ export default function HomeScreen({ onStart }: Props) {
     const interval = setInterval(checkUpdate, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
+
+  async function manualCheckUpdate() {
+    setCheckingUpdate(true);
+    try {
+      const update = await check();
+      if (update?.available) setUpdateVersion(update.version);
+      else setUpdateVersion(null);
+    } catch {}
+    setCheckingUpdate(false);
+  }
+
 
   async function installUpdate() {
     try {
@@ -136,7 +148,12 @@ export default function HomeScreen({ onStart }: Props) {
 
       {/* Footer */}
       <footer className="home-footer">
-        <span className="home-version">v0.2.0</span>
+        <div className="home-version-row">
+          <span className="home-version">v0.2.0</span>
+          <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
+            {checkingUpdate ? "Checking…" : "Check for updates"}
+          </button>
+        </div>
         <div className="home-links">
           <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Help</a>
           <span className="home-dot">·</span>
