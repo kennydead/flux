@@ -516,6 +516,95 @@ fn run_detached(program: String, args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
+    let image = agent_image();
+    let workspace = farm.join("planning-workspace");
+    let _ = std::fs::create_dir_all(&workspace);
+
+    let mut docker_args: Vec<String> = vec![
+        "docker".into(), "run".into(), "-it".into(), "--rm".into(),
+        "--platform".into(), "linux/amd64".into(),
+        "--network".into(), "claudeagentfarm_default".into(),
+        "-e".into(), "DASHBOARD_URL=http://dashboard-backend:8090".into(),
+        "-v".into(), "claudeagentfarm_claude-home:/home/agent".into(),
+        "-v".into(), format!("{}:/planning-workspace", workspace.to_string_lossy()),
+    ];
+    if !project_id.is_empty() {
+        docker_args.push("-e".into());
+        docker_args.push(format!("DASHBOARD_PROJECT_ID={project_id}"));
+    }
+    docker_args.push(image);
+    docker_args.push("python".into());
+    docker_args.push("-m".into());
+    docker_args.push("agent.discuss".into());
+
+    #[cfg(target_os = "macos")]
+    {
+        let cmd = docker_args.iter().map(|a| {
+            if a.contains(' ') || a.contains(':') { format!("\"{a}\"") } else { a.clone() }
+        }).collect::<Vec<_>>().join(" ");
+        let safe = cmd.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script \"{safe}\""
+        );
+        let _ = silent_command("osascript").args(["-e", &script]).spawn();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let bat_path = farm.join("discuss.bat");
+        let line = docker_args.join(" ");
+        let content = format!("@echo off\n{line}\npause\n");
+        if std::fs::write(&bat_path, content).is_ok() {
+            let bat = bat_path.to_string_lossy().into_owned();
+            let _ = silent_command("cmd.exe")
+                .args(["/c", "start", "Farm Discuss", "cmd", "/k", &bat])
+                .spawn();
+        }
+    }
+}
+
+#[tauri::command]
+fn start_host_bridge() {
+    let farm = farm_dir();
+    std::thread::spawn(move || {
+        let server = match tiny_http::Server::http("127.0.0.1:8092") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        loop {
+            if let Ok(mut req) = server.recv() {
+                let is_options = *req.method() == tiny_http::Method::Options;
+                let is_discuss = req.url() == "/open-discuss";
+
+                let project_id = if is_discuss && !is_options {
+                    let mut body = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                    serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| v["projectId"].as_str().map(String::from))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
+                if is_discuss && !is_options {
+                    open_discuss_terminal(&farm, &project_id);
+                }
+
+                let status = if is_options { 204u16 } else { 200u16 };
+                let mut resp = tiny_http::Response::from_string("{\"ok\":true}")
+                    .with_status_code(status);
+                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "POST, OPTIONS").unwrap());
+                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap());
+                resp.add_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap());
+                let _ = req.respond(resp);
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -643,6 +732,7 @@ pub fn run() {
             run_command,
             run_docker_compose,
             run_detached,
+            start_host_bridge,
             check_setup_complete,
             mark_setup_complete,
             check_wsl_installed,

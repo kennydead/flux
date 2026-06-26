@@ -70,7 +70,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
 
       // 2. Extract bundled files → ~/farm/
       set("extract", "active");
-      const farmDir = await invoke<string>("extract_resources");
+      await invoke<string>("extract_resources");
       set("extract", "done");
 
       // 3. Pull images + tag (must happen before auth check — auth uses the image)
@@ -102,10 +102,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
 
       // Start host bridge (fire and forget)
       set("bridge", "active");
-      invoke("run_detached", {
-        program: "python3",
-        args: [`${farmDir}/host_bridge.py`],
-      }).catch(() => {});
+      invoke("start_host_bridge").catch(() => {});
       set("bridge", "done");
 
       // Wait for dashboard
