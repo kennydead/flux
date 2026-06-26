@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import Button from "../components/Button";
 import appIcon from "../assets/app-icon.png";
 import "./HomeScreen.css";
@@ -19,19 +20,46 @@ const FEATURES = [
 export default function HomeScreen({ onStart }: Props) {
   const [autostart, setAutostart] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
       invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
     }
 
-    const checkUpdate = () =>
-      invoke<string | null>("check_for_update").then(setUpdateVersion).catch(() => {});
+    const checkUpdate = async () => {
+      try {
+        const update = await check();
+        if (update?.available) setUpdateVersion(update.version);
+      } catch {}
+    };
 
     checkUpdate();
-    const interval = setInterval(checkUpdate, 60 * 60 * 1000); // every hour
+    const interval = setInterval(checkUpdate, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
+
+  async function installUpdate() {
+    try {
+      setDownloading(true);
+      const update = await check();
+      if (!update?.available) return;
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          if (total > 0) setDownloadProgress(Math.round((downloaded / total) * 100));
+        }
+        if (event.event === "Finished") setDownloadProgress(100);
+      });
+      await relaunch();
+    } catch {
+      setDownloading(false);
+    }
+  }
 
   function toggleAutostart(e: React.ChangeEvent<HTMLInputElement>) {
     const val = e.target.checked;
@@ -44,17 +72,21 @@ export default function HomeScreen({ onStart }: Props) {
       {/* Update banner */}
       {updateVersion && (
         <div className="home-update-banner">
-          <span>Update available: {updateVersion}</span>
-          <a
-            className="home-update-link"
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              openUrl("https://github.com/kennydead/claude-agent-farm-dist/releases/latest").catch(() => {});
-            }}
-          >
-            Download →
-          </a>
+          {downloading ? (
+            <>
+              <span>{downloadProgress < 100 ? `Downloading… ${downloadProgress}%` : "Installing…"}</span>
+              <div className="home-update-progress">
+                <div className="home-update-progress-bar" style={{ width: `${downloadProgress}%` }} />
+              </div>
+            </>
+          ) : (
+            <>
+              <span>Update available: {updateVersion}</span>
+              <button className="home-update-link" onClick={installUpdate}>
+                Install & Restart →
+              </button>
+            </>
+          )}
         </div>
       )}
 

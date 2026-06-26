@@ -424,6 +424,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let show  = MenuItem::with_id(app, "show",  "Show Flux",      true, None::<&str>)?;
             let stop  = MenuItem::with_id(app, "stop",  "Stop Farm",       true, None::<&str>)?;

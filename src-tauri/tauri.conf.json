@@ -25,6 +25,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyQjNEMkU1QUI4M0JGRDkKUldUWnY0T3I1ZEt6RWlLalV5VElLTm1KLzVSSUtLUE9mY2lXMWxUU20wT2Z6MnNLdWx2NVVJT2sK",
+      "endpoints": [
+        "https://github.com/kennydead/claude-agent-farm-dist/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
