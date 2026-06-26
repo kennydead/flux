@@ -136,7 +136,7 @@ export default function HomeScreen({ onStart }: Props) {
 
       {/* Footer */}
       <footer className="home-footer">
-        <span className="home-version">v0.1.1</span>
+        <span className="home-version">v0.1.3</span>
         <div className="home-links">
           <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Help</a>
           <span className="home-dot">·</span>
