@@ -2,11 +2,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  height: 100vh;
+  min-height: 100vh;
   padding: 0 28px 20px;
   box-sizing: border-box;
   position: relative;
-  overflow: hidden;
 }
 
 /* Constrain content to readable max-width — footer stays full width */
