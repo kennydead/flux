@@ -20,7 +20,7 @@ async function isFarmRunning(): Promise<boolean> {
 
 export default function App() {
   const [state, setState] = useState<AppState>("loading");
-  const [initialStep, setInitialStep] = useState<SetupStep>("license");
+  const [initialStep] = useState<SetupStep>("license");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
@@ -70,8 +70,9 @@ export default function App() {
       if (await isFarmRunning()) { setState("running"); return; }
       const hasLicense = await invoke<boolean>("check_license");
       if (!hasLicense) { setState("home"); return; }
-      const isAuth = await invoke<boolean>("check_claude_auth");
-      if (!isAuth) { setInitialStep("docker"); setState("home"); return; }
+      // License exists → go to home. StartupScreen verifies Docker + auth
+      // when the user clicks Get Started, so we don't misread a Docker-down
+      // state as "not authenticated" here.
       setIsConfigured(true);
       setState("home");
     }

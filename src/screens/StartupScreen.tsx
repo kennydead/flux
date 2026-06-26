@@ -59,7 +59,14 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
 
       // Verify Claude is authenticated before starting anything
       set("auth", "active");
-      const isAuth = await invoke<boolean>("check_claude_auth");
+      let isAuth = false;
+      try {
+        isAuth = await invoke<boolean>("check_claude_auth");
+      } catch {
+        set("auth", "error");
+        setError("Could not reach Docker. Make sure Docker Desktop is running and try again.");
+        return;
+      }
       if (!isAuth) {
         set("auth", "error");
         setError("Claude account not authenticated. Please sign in again.");
