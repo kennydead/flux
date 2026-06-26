@@ -66,11 +66,11 @@ export default function DockerScreen({ onReady }: Props) {
           {state === "no-wsl" && (
             <div className="docker-card">
               <p><strong>Step 1:</strong> Install WSL (Windows Subsystem for Linux)</p>
-              <p className="screen-footnote" style={{ marginTop: 8 }}>
-                Open <strong>PowerShell as Administrator</strong> and run:
-              </p>
-              <code className="screen-code">wsl --install --no-distribution</code>
-              <p className="screen-footnote" style={{ marginTop: 8 }}>
+              <Button onClick={() => invoke("install_wsl")}>
+                Install WSL →
+              </Button>
+              <p className="screen-footnote">
+                This opens an Administrator prompt to install WSL.
                 Then <strong>restart your computer</strong> and reopen Flux.
               </p>
             </div>

@@ -271,7 +271,7 @@ async fn extract_resources(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 async fn check_wsl_installed() -> bool {
     #[cfg(not(target_os = "windows"))]
-    return true; // non-Windows never needs WSL
+    return true;
 
     #[cfg(target_os = "windows")]
     return tauri::async_runtime::spawn_blocking(|| {
@@ -283,6 +283,18 @@ async fn check_wsl_installed() -> bool {
     })
     .await
     .unwrap_or(false);
+}
+
+#[tauri::command]
+fn install_wsl() {
+    // Opens an elevated PowerShell that runs wsl --install --no-distribution
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-Command",
+            "Start-Process powershell -ArgumentList '-NoExit','-Command','wsl --install --no-distribution' -Verb RunAs",
+        ])
+        .spawn();
 }
 
 #[tauri::command]
@@ -599,6 +611,7 @@ pub fn run() {
             run_docker_compose,
             run_detached,
             check_wsl_installed,
+            install_wsl,
             check_docker_running,
             check_claude_auth,
             start_claude_auth,
