@@ -112,14 +112,22 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
   }
 
   async function waitForDashboard(attempts = 80) {
+    // Step 1: wait for backend (DB init can be slow on first run)
+    let backendUp = false;
     for (let i = 0; i < attempts; i++) {
-      try {
-        const ok = await invoke<boolean>("check_dashboard_health");
-        if (ok) return;
-      } catch {}
+      backendUp = await invoke<boolean>("check_dashboard_health").catch(() => false);
+      if (backendUp) break;
       await delay(2000);
     }
-    throw new Error("Dashboard did not start in time. Check that Docker is running and try again.");
+    if (!backendUp) throw new Error("Dashboard did not start in time. Check that Docker is running and try again.");
+
+    // Step 2: wait for frontend (separate container, may lag behind backend)
+    for (let i = 0; i < 20; i++) {
+      const frontendUp = await invoke<boolean>("check_farm_running").catch(() => false);
+      if (frontendUp) return;
+      await delay(1500);
+    }
+    throw new Error("Dashboard frontend did not start in time. Check that Docker is running and try again.");
   }
 
   const hasError = steps.some((s) => s.state === "error");

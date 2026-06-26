@@ -59,8 +59,9 @@ fn get_farm_dir() -> String {
 // Rust-side HTTP checks bypass webview CORS restrictions
 #[tauri::command]
 async fn check_farm_running() -> bool {
+    // Check the frontend (5174) — what the iframe actually loads
     tauri::async_runtime::spawn_blocking(|| {
-        ureq::get("http://localhost:8090/health")
+        ureq::get("http://localhost:5174")
             .timeout(std::time::Duration::from_secs(3))
             .call()
             .map(|r| r.status() == 200)
