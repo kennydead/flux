@@ -1,4 +1,5 @@
 import Button from "../components/Button";
+import appIcon from "../assets/app-icon.png";
 import "./HomeScreen.css";
 
 interface Props {
@@ -19,17 +20,7 @@ export default function HomeScreen({ onStart, isConfigured }: Props) {
       <div className="home-hero">
         <div className="home-glow" />
         <div className="home-icon">
-          <svg width="52" height="52" viewBox="0 0 56 56" fill="none">
-            <polygon points="28,6 50,18 50,38 28,50 6,38 6,18" fill="url(#g1)" opacity="0.2" />
-            <polygon points="28,11 46,21 46,35 28,45 10,35 10,21" fill="url(#g1)" opacity="0.35" />
-            <polygon points="28,17 42,25 42,33 28,41 14,33 14,25" fill="url(#g1)" />
-            <defs>
-              <linearGradient id="g1" x1="6" y1="6" x2="50" y2="50" gradientUnits="userSpaceOnUse">
-                <stop stopColor="#4F8EF7" />
-                <stop offset="1" stopColor="#7C5CFC" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <img src={appIcon} alt="Flux" className="home-icon-img" />
         </div>
 
         <h1 className="home-title">Flux</h1>
