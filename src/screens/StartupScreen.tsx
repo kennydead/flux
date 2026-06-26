@@ -16,12 +16,13 @@ interface Step {
 }
 
 const INITIAL_STEPS: Step[] = [
-  { id: "auth",    label: "Verifying Claude account",   state: "pending" },
-  { id: "extract",  label: "Setting up farm directory",  state: "pending" },
-  { id: "pull",     label: "Pulling latest images",      state: "pending" },
-  { id: "start",    label: "Starting services",          state: "pending" },
-  { id: "bridge",   label: "Starting host bridge",       state: "pending" },
-  { id: "ready",    label: "Ready",                      state: "pending" },
+  { id: "docker",  label: "Checking Docker",            state: "pending" },
+  { id: "extract", label: "Setting up farm directory",  state: "pending" },
+  { id: "pull",    label: "Pulling latest images",      state: "pending" },
+  { id: "auth",    label: "Verifying AI account",       state: "pending" },
+  { id: "start",   label: "Starting services",          state: "pending" },
+  { id: "bridge",  label: "Starting host bridge",       state: "pending" },
+  { id: "ready",   label: "Ready",                      state: "pending" },
 ];
 
 
@@ -40,10 +41,10 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
     if (import.meta.env.DEV) {
       for (const step of INITIAL_STEPS) {
         set(step.id, "active");
-        await delay(600);
+        await delay(500);
         set(step.id, "done");
       }
-      setTimeout(onReady, 600);
+      setTimeout(onReady, 500);
       return;
     }
 
@@ -57,40 +58,40 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
         `${reg}/dashboard-frontend:${version}`,
       ];
 
-      // Verify Claude is authenticated before starting anything
-      set("auth", "active");
+      // 1. Verify Docker is running
+      set("docker", "active");
       const dockerRunning = await invoke<boolean>("check_docker_running");
       if (!dockerRunning) {
-        set("auth", "error");
+        set("docker", "error");
         setError("Docker is not running. Please start Docker Desktop and try again.");
         return;
       }
+      set("docker", "done");
 
-      const isAuth = await invoke<boolean>("check_claude_auth");
-      if (!isAuth) {
-        set("auth", "error");
-        setError("Claude account not authenticated. Please sign in again.");
-        return;
-      }
-      set("auth", "done");
-
-      // Extract bundled files → ~/farm/
+      // 2. Extract bundled files → ~/farm/
       set("extract", "active");
       const farmDir = await invoke<string>("extract_resources");
       set("extract", "done");
 
-      // Pull images + tag
+      // 3. Pull images + tag (must happen before auth check — auth uses the image)
       set("pull", "active");
       for (const image of images) {
         await invoke("run_command", { program: "docker", args: ["pull", image] });
       }
       for (const tag of AGENT_TAGS) {
-        await invoke("run_command", {
-          program: "docker",
-          args: ["tag", images[0], tag],
-        });
+        await invoke("run_command", { program: "docker", args: ["tag", images[0], tag] });
       }
       set("pull", "done");
+
+      // 4. Verify AI account auth (image is now available locally)
+      set("auth", "active");
+      const isAuth = await invoke<boolean>("check_claude_auth");
+      if (!isAuth) {
+        set("auth", "error");
+        setError("AI account not authenticated. Please sign in again.");
+        return;
+      }
+      set("auth", "done");
 
       // Start services
       set("start", "active");
