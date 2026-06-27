@@ -595,17 +595,17 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
         let _ = std::fs::write(&bat_path, bat_content);
         let _ = std::fs::write(&ps1_path, ps1_content);
         let ps1 = ps1_path.to_string_lossy().into_owned();
-        // Try Windows Terminal → PowerShell (both support Ctrl+V) → cmd.exe fallback
-        let opened = silent_command("wt.exe")
+        // Use a visible window — do NOT use silent_command here
+        let opened = std::process::Command::new("wt.exe")
             .args(["powershell.exe", "-NoExit", "-File", &ps1])
             .spawn()
             .is_ok()
-            || silent_command("powershell.exe")
+            || std::process::Command::new("powershell.exe")
                 .args(["-NoExit", "-File", &ps1])
                 .spawn()
                 .is_ok();
         if !opened {
-            let _ = silent_command("cmd.exe")
+            let _ = std::process::Command::new("cmd.exe")
                 .args(["/c", "start", "Farm Discuss", "cmd", "/k", &bat])
                 .spawn();
         }
