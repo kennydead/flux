@@ -588,9 +588,23 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
     {
         let bat_path = farm.join("discuss.bat");
         let line = docker_args.join(" ");
-        let content = format!("@echo off\n{line}\npause\n");
-        if std::fs::write(&bat_path, content).is_ok() {
-            let bat = bat_path.to_string_lossy().into_owned();
+        let bat_content = format!("@echo off\n{line}\npause\n");
+        let ps1_content = format!("Invoke-Expression '{}'\nRead-Host 'Press Enter to close'", line.replace('\'', "''"));
+        let bat = bat_path.to_string_lossy().into_owned();
+        let ps1_path = farm.join("discuss.ps1");
+        let _ = std::fs::write(&bat_path, bat_content);
+        let _ = std::fs::write(&ps1_path, ps1_content);
+        let ps1 = ps1_path.to_string_lossy().into_owned();
+        // Try Windows Terminal → PowerShell (both support Ctrl+V) → cmd.exe fallback
+        let opened = silent_command("wt.exe")
+            .args(["powershell.exe", "-NoExit", "-File", &ps1])
+            .spawn()
+            .is_ok()
+            || silent_command("powershell.exe")
+                .args(["-NoExit", "-File", &ps1])
+                .spawn()
+                .is_ok();
+        if !opened {
             let _ = silent_command("cmd.exe")
                 .args(["/c", "start", "Farm Discuss", "cmd", "/k", &bat])
                 .spawn();
