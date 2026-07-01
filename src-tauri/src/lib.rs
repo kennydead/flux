@@ -549,6 +549,24 @@ fn run_detached(program: String, args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn open_folder_in_terminal(path: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let safe = path.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script \"cd \\\"{safe}\\\"\""
+        );
+        let _ = silent_command("osascript").args(["-e", &script]).spawn();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/c", "start", "Project Terminal", "cmd", "/k", &format!("cd /d \"{}\"", path)])
+            .spawn();
+    }
+}
+
 fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
     let image = agent_image();
     let workspace = farm.join("planning-workspace");
@@ -625,19 +643,28 @@ fn start_host_bridge() {
                 let is_options = *req.method() == tiny_http::Method::Options;
                 let is_discuss = req.url() == "/open-discuss";
 
-                let project_id = if is_discuss && !is_options {
-                    let mut body = String::new();
+                let is_open_terminal = req.url() == "/open-terminal";
+
+                let mut body = String::new();
+                if (is_discuss || is_open_terminal) && !is_options {
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
-                    serde_json::from_str::<serde_json::Value>(&body)
-                        .ok()
-                        .and_then(|v| v["projectId"].as_str().map(String::from))
-                        .unwrap_or_default()
+                }
+                let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+
+                let project_id = if is_discuss && !is_options {
+                    parsed["projectId"].as_str().map(String::from).unwrap_or_default()
                 } else {
                     String::new()
                 };
 
                 if is_discuss && !is_options {
                     open_discuss_terminal(&farm, &project_id);
+                }
+
+                if is_open_terminal && !is_options {
+                    if let Some(path) = parsed["path"].as_str() {
+                        open_folder_in_terminal(path);
+                    }
                 }
 
                 let status = if is_options { 204u16 } else { 200u16 };
