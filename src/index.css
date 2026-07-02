@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+
+  --accent:         #4F8EF7;
+  --accent-end:     #7C5CFC;
+  --accent-glow:    rgba(79, 142, 247, 0.25);
+  --bg:             #0D0D0F;
+  --surface:        #161618;
+  --surface-raised: #1E1E21;
+  --border:         #2A2A2E;
+  --text:           #F0F0F2;
+  --text-muted:     #6B6B7A;
+  --success:        #34D399;
+  --error:          #F87171;
+  --font:           'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  min-height: 100%;
+  width: 100%;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}

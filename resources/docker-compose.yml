@@ -1,0 +1,128 @@
+name: claudeagentfarm
+
+services:
+  dashboard-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: farm
+      POSTGRES_PASSWORD: farm
+      POSTGRES_DB: farm
+    volumes:
+      - dashboard-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U farm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  dashboard-backend:
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-backend:latest
+    platform: linux/amd64
+    ports:
+      - "8090:8090"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DASHBOARD_DATABASE_URL: postgresql+asyncpg://farm:farm@dashboard-db:5432/farm
+      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:-change-this-before-use}
+      DASHBOARD_CORS_ORIGINS: http://localhost:5174
+      COMPOSE_PROJECT_DIR: ${PWD}
+      LICENSE_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/validate-license
+      DIAGNOSTICS_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/receive-diagnostic
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config.yml:/farm/config.yml:ro
+      - ./.env:/farm/.env
+      - ./logs:/farm/logs
+      - claude-home:/home/agent:ro
+      - demo-repos:/demo-repos
+    depends_on:
+      dashboard-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard-frontend:
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:latest
+    platform: linux/amd64
+    ports:
+      - "5174:5174"
+    depends_on:
+      - dashboard-backend
+    restart: unless-stopped
+
+  coder:
+    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    platform: linux/amd64
+    env_file: .env
+    environment:
+      AGENT_MODE: coder
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - claude-home:/home/agent
+      - coder-workspace:/workspace/coder
+      - ./logs:/app/logs
+      - demo-repos:/demo-repos
+    profiles:
+      - agents
+    restart: unless-stopped
+
+  reviewer:
+    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    platform: linux/amd64
+    env_file: .env
+    environment:
+      AGENT_MODE: reviewer
+      WORKSPACE_DIR: /workspace/reviewer
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - claude-home:/home/agent
+      - reviewer-workspace:/workspace/reviewer
+      - ./logs:/app/logs
+      - demo-repos:/demo-repos
+    profiles:
+      - agents
+    restart: unless-stopped
+
+  planner:
+    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    platform: linux/amd64
+    env_file: .env
+    environment:
+      AGENT_MODE: planner
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - claude-home:/home/agent
+      - ./logs:/app/logs
+      - demo-repos:/demo-repos
+    profiles:
+      - agents
+    restart: unless-stopped
+
+  auditor:
+    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    platform: linux/amd64
+    env_file: .env
+    environment:
+      AGENT_MODE: auditor
+      WORKSPACE_DIR: /workspace/auditor
+      AUDIT_WORKSPACE: /workspace/auditor
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - claude-home:/home/agent
+      - auditor-workspace:/workspace/auditor
+      - ./logs:/app/logs
+      - demo-repos:/demo-repos
+    profiles:
+      - agents
+      - scheduled-audit
+    restart: unless-stopped
+
+volumes:
+  dashboard-db-data:
+  claude-home:
+  coder-workspace:
+  reviewer-workspace:
+  auditor-workspace:
+  demo-repos:
