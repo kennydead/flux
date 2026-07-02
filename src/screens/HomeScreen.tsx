@@ -149,7 +149,7 @@ export default function HomeScreen({ onStart }: Props) {
       {/* Footer */}
       <footer className="home-footer">
         <div className="home-version-row">
-          <span className="home-version">v0.3.0</span>
+          <span className="home-version">v0.3.2</span>
           <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
             {checkingUpdate ? "Checking…" : "Check for updates"}
           </button>
