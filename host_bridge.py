@@ -86,6 +86,20 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
                 continue
 
 
+def _open_folder_in_terminal(path: str) -> None:
+    if SYSTEM == "Darwin":
+        subprocess.Popen(["open", "-a", "Terminal", path])
+
+    elif IS_WSL:
+        try:
+            subprocess.Popen(["wt.exe", "-w", "0", "nt", "--", "bash", "-c", f"cd '{path}'; exec bash"])
+        except FileNotFoundError:
+            subprocess.Popen(["cmd.exe", "/c", f'start "Project Terminal" bash -c "cd \'{path}\'"'])
+
+    elif SYSTEM == "Windows":
+        subprocess.Popen(f'start "Project Terminal" cmd /k "cd /d \\"{path}\\""', shell=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -98,20 +112,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = {}
+        if length:
+            try:
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                pass
+
         if self.path == "/open-discuss":
-            length = int(self.headers.get("Content-Length", 0))
-            body = {}
-            if length:
-                try:
-                    body = json.loads(self.rfile.read(length))
-                except Exception:
-                    pass
             _open_terminal(PROJECT_DIR, body.get("projectId", ""))
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+
+        elif self.path == "/open-terminal":
+            path = body.get("path", "")
+            if path:
+                _open_folder_in_terminal(path)
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
         else:
             self.send_response(404)
             self._cors()
