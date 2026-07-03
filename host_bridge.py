@@ -61,10 +61,12 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
 
     elif SYSTEM == "Windows":
         import tempfile
+        # Write to the OS temp dir, not the project dir, so we don't litter
+        # .bat files next to the customer's code
         bat = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".bat", delete=False, dir=project_dir
+            mode="w", suffix=".bat", delete=False
         )
-        bat.write("@echo off\n" + " ".join(docker_args) + "\npause\n")
+        bat.write("@echo off\n" + " ".join(docker_args) + "\npause\ndel \"%~f0\"\n")
         bat.close()
         subprocess.Popen(
             ["cmd.exe", "/c", "start", "Farm Discuss", "cmd", "/k", bat.name]
@@ -116,10 +118,12 @@ def _open_folder_in_terminal(path: str) -> None:
         try:
             subprocess.Popen(["wt.exe", "-w", "0", "nt", "--", "bash", "-c", f"cd '{path}'; exec bash"])
         except FileNotFoundError:
-            subprocess.Popen(["cmd.exe", "/c", f'start "Project Terminal" bash -c "cd \'{path}\'"'])
+            subprocess.Popen(["cmd.exe", "/c", f'start "Project Terminal" bash -c "cd \'{path}\'; exec bash"'])
 
     elif SYSTEM == "Windows":
-        subprocess.Popen(f'start "Project Terminal" cmd /k "cd /d \\"{path}\\""', shell=True)
+        # start's /d switch sets the working dir — nesting a quoted cd inside
+        # cmd /k breaks cmd.exe's quote parsing
+        subprocess.Popen(f'start "Project Terminal" /d "{path}" cmd', shell=True)
 
 
 class Handler(BaseHTTPRequestHandler):
