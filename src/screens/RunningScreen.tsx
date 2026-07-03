@@ -10,6 +10,7 @@ export default function RunningScreen({ onBack: _onBack }: Props) {
       className="dashboard-frame"
       src="http://localhost:5174"
       title="Farm Dashboard"
+      allow="clipboard-read; clipboard-write"
     />
   );
 }

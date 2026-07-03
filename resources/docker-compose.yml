@@ -28,7 +28,7 @@ services:
       DASHBOARD_DATABASE_URL: postgresql+asyncpg://farm:farm@dashboard-db:5432/farm
       DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:-change-this-before-use}
       DASHBOARD_CORS_ORIGINS: http://localhost:5174
-      COMPOSE_PROJECT_DIR: ${PWD}
+      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR:-${PWD:-}}
       LICENSE_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/validate-license
       DIAGNOSTICS_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/receive-diagnostic
     volumes:

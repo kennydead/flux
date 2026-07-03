@@ -308,6 +308,20 @@ dashboard:\n\
         }
     }
 
+    // GUI-launched processes have no shell PWD, which docker-compose variable
+    // substitution relied on — persist the farm dir so ${COMPOSE_PROJECT_DIR}
+    // resolves to the real host path (needed for Live Session bind mounts).
+    let env_path = farm.join(".env");
+    let env_content = std::fs::read_to_string(&env_path).unwrap_or_default();
+    if !env_content.lines().any(|l| l.starts_with("COMPOSE_PROJECT_DIR=")) {
+        let mut new_content = env_content;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(&format!("COMPOSE_PROJECT_DIR={}\n", farm.to_string_lossy()));
+        std::fs::write(&env_path, new_content).map_err(|e| e.to_string())?;
+    }
+
     Ok(farm.to_string_lossy().into_owned())
 }
 
@@ -575,9 +589,12 @@ fn open_folder_in_terminal(path: &str) {
 
     #[cfg(target_os = "windows")]
     {
+        // Use start's /d switch for the working directory — nesting a quoted
+        // `cd /d "..."` string inside cmd /k breaks because cmd.exe doesn't
+        // understand Rust's backslash-escaped quotes.
         let native = to_windows_path(path);
         let _ = std::process::Command::new("cmd.exe")
-            .args(["/c", "start", "Project Terminal", "cmd", "/k", &format!("cd /d \"{}\"", native)])
+            .args(["/c", "start", "Project Terminal", "/d", &native, "cmd"])
             .spawn();
     }
 }
