@@ -75,16 +75,17 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       set("extract", "done");
 
       // 3. Pull images + tag (must happen before auth check — auth uses the image)
-      set("pull", "active");
+      const imageNames = ["agent", "dashboard-backend", "dashboard-frontend"];
       let anyUpdated = false;
-      for (const image of images) {
-        const updated = await invoke<boolean>("pull_image", { image });
+      for (let i = 0; i < images.length; i++) {
+        set("pull", "active", `${imageNames[i]} (${i + 1}/${images.length}) — can take a few minutes after an update`);
+        const updated = await invoke<boolean>("pull_image", { image: images[i] });
         if (updated) anyUpdated = true;
       }
       for (const tag of AGENT_TAGS) {
         await invoke("run_command", { program: "docker", args: ["tag", images[0], tag] });
       }
-      set("pull", "done", anyUpdated ? "updated to latest version" : undefined);
+      set("pull", "done", anyUpdated ? "updated to latest version" : "");
 
       // 4. Verify AI account auth (image is now available locally)
       set("auth", "active");

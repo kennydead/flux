@@ -276,6 +276,37 @@ fn save_license_key(key: String) -> Result<(), String> {
     std::fs::write(logs.join("license_key.txt"), key.trim()).map_err(|e| e.to_string())
 }
 
+/// Append `KEY=value` to the env file if no line with that key exists.
+fn ensure_env_var(env_path: &std::path::Path, key: &str, value: &str) -> Result<(), String> {
+    let content = std::fs::read_to_string(env_path).unwrap_or_default();
+    if content.lines().any(|l| l.starts_with(&format!("{key}="))) {
+        return Ok(());
+    }
+    let mut new_content = content;
+    if !new_content.is_empty() && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    new_content.push_str(&format!("{key}={value}\n"));
+    std::fs::write(env_path, new_content).map_err(|e| e.to_string())
+}
+
+/// 64 hex chars from the OS RNG (no extra crate: SystemTime + getrandom via /dev/urandom
+/// is not portable to Windows, so use the `getrandom` crate).
+fn random_hex_key() -> String {
+    let mut buf = [0u8; 32];
+    if getrandom::getrandom(&mut buf).is_err() {
+        // Extremely unlikely; fall back to a time-seeded value rather than failing setup
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (nanos.rotate_left(i as u32) & 0xff) as u8;
+        }
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[tauri::command]
 async fn extract_resources(app: AppHandle) -> Result<String, String> {
     let farm = farm_dir();
@@ -312,14 +343,13 @@ dashboard:\n\
     // substitution relied on — persist the farm dir so ${COMPOSE_PROJECT_DIR}
     // resolves to the real host path (needed for Live Session bind mounts).
     let env_path = farm.join(".env");
-    let env_content = std::fs::read_to_string(&env_path).unwrap_or_default();
-    if !env_content.lines().any(|l| l.starts_with("COMPOSE_PROJECT_DIR=")) {
-        let mut new_content = env_content;
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str(&format!("COMPOSE_PROJECT_DIR={}\n", farm.to_string_lossy()));
-        std::fs::write(&env_path, new_content).map_err(|e| e.to_string())?;
+    ensure_env_var(&env_path, "COMPOSE_PROJECT_DIR", &farm.to_string_lossy())?;
+
+    // Persist a random secret for token encryption — relying on the compose
+    // default means any default change invalidates every stored token.
+    let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
+    if !existing.lines().any(|l| l.starts_with("DASHBOARD_SECRET_KEY=")) {
+        ensure_env_var(&env_path, "DASHBOARD_SECRET_KEY", &random_hex_key())?;
     }
 
     Ok(farm.to_string_lossy().into_owned())
