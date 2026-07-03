@@ -5,6 +5,7 @@ Listens on localhost:8092 and opens a terminal for interactive planning sessions
 import json
 import os
 import platform
+import re
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -86,7 +87,28 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
                 continue
 
 
+def _to_native_path(path: str) -> str:
+    """Convert a Linux/Git-Bash style path to the native OS path.
+
+    The backend sends host_workdir derived from COMPOSE_PROJECT_DIR. When
+    Docker is run from Git Bash or MSYS on Windows, ${PWD} produces
+    /c/Users/... style paths. Convert those to C:\\Users\\... for Windows
+    or /mnt/c/Users/... for WSL before passing to the OS.
+    """
+    # /c/Users/... → platform-specific form
+    m = re.match(r'^/([a-zA-Z])(/.*)$', path)
+    if m:
+        drive, rest = m.group(1), m.group(2)
+        if SYSTEM == "Windows":
+            return f"{drive.upper()}:{rest.replace('/', chr(92))}"
+        if IS_WSL:
+            return f"/mnt/{drive.lower()}{rest}"
+    return path
+
+
 def _open_folder_in_terminal(path: str) -> None:
+    path = _to_native_path(path)
+
     if SYSTEM == "Darwin":
         subprocess.Popen(["open", "-a", "Terminal", path])
 
