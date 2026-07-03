@@ -7,8 +7,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Step 0: only release tags whose commit is on main — a tag pushed from a
+  # dev/feature branch must not trigger a customer-facing build
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag commit is on main
+        run: |
+          git fetch origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag commit is on main — proceeding"
+          else
+            echo "::error::Tag commit is not on main. Releases must be tagged from main."
+            exit 1
+          fi
+
   # Step 1: create a draft release — outputs the ID so both builds can upload to it
   create-release:
+    needs: check-branch
     runs-on: ubuntu-latest
     permissions:
       contents: write
