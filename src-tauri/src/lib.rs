@@ -549,6 +549,20 @@ fn run_detached(program: String, args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Convert a Git Bash / MSYS-style path (`/c/Users/...`) to a native Windows path (`C:\Users\...`).
+/// Paths that don't match the pattern are returned unchanged.
+#[allow(dead_code)]
+fn to_windows_path(path: &str) -> String {
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+        let drive = (b[1] as char).to_ascii_uppercase();
+        let rest = path[2..].replace('/', "\\");
+        format!("{drive}:{rest}")
+    } else {
+        path.to_string()
+    }
+}
+
 fn open_folder_in_terminal(path: &str) {
     #[cfg(target_os = "macos")]
     {
@@ -561,8 +575,9 @@ fn open_folder_in_terminal(path: &str) {
 
     #[cfg(target_os = "windows")]
     {
+        let native = to_windows_path(path);
         let _ = std::process::Command::new("cmd.exe")
-            .args(["/c", "start", "Project Terminal", "cmd", "/k", &format!("cd /d \"{}\"", path)])
+            .args(["/c", "start", "Project Terminal", "cmd", "/k", &format!("cd /d \"{}\"", native)])
             .spawn();
     }
 }
