@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
 
   dashboard-backend:
-    image: ghcr.io/kennydead/claude-agent-farm/dashboard-backend:latest
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-backend:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     ports:
       - "8090:8090"
@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
 
   dashboard-frontend:
-    image: ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:latest
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     ports:
       - "5174:5174"
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   coder:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     env_file: .env
     environment:
@@ -70,7 +70,7 @@ services:
     restart: unless-stopped
 
   reviewer:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     env_file: .env
     environment:
@@ -87,7 +87,7 @@ services:
     restart: unless-stopped
 
   planner:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     env_file: .env
     environment:
@@ -102,7 +102,7 @@ services:
     restart: unless-stopped
 
   auditor:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     platform: linux/amd64
     env_file: .env
     environment:
