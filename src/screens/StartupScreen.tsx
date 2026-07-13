@@ -20,7 +20,6 @@ const INITIAL_STEPS: Step[] = [
   { id: "docker",  label: "Checking Docker",            state: "pending" },
   { id: "extract", label: "Setting up farm directory",  state: "pending" },
   { id: "pull",    label: "Pulling latest images",      state: "pending" },
-  { id: "auth",    label: "Verifying AI account",       state: "pending" },
   { id: "start",   label: "Starting services",          state: "pending" },
   { id: "bridge",  label: "Starting host bridge",       state: "pending" },
   { id: "ready",   label: "Ready",                      state: "pending" },
@@ -74,7 +73,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       await invoke<string>("extract_resources");
       set("extract", "done");
 
-      // 3. Pull images + tag (must happen before auth check — auth uses the image)
+      // 3. Pull images + tag
       const imageNames = ["agent", "dashboard-backend", "dashboard-frontend"];
       let anyUpdated = false;
       for (let i = 0; i < images.length; i++) {
@@ -86,16 +85,6 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
         await invoke("run_command", { program: "docker", args: ["tag", images[0], tag] });
       }
       set("pull", "done", anyUpdated ? "updated to latest version" : "");
-
-      // 4. Verify AI account auth (image is now available locally)
-      set("auth", "active");
-      const isAuth = await invoke<boolean>("check_claude_auth");
-      if (!isAuth) {
-        set("auth", "error");
-        setError("AI account not authenticated. Please sign in again.");
-        return;
-      }
-      set("auth", "done");
 
       // Start services
       set("start", "active");

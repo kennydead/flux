@@ -83,7 +83,7 @@ export default function App() {
       if (await isFarmRunning()) { setState("running"); return; }
       const hasLicense = await invoke<boolean>("check_license");
       if (!hasLicense) { setState("home"); return; }
-      // Only mark as configured if setup was fully completed (including auth)
+      // Only mark as configured if setup was fully completed
       const setupDone = await invoke<boolean>("check_setup_complete");
       if (setupDone) setIsConfigured(true);
       setState("home");
