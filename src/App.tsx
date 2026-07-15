@@ -194,7 +194,7 @@ export default function App() {
           <div className="reset-dialog">
             <h2>Reset Setup?</h2>
             <p>
-              This will stop the farm, remove your license key, and sign out of Claude.
+              This will stop the farm and remove your license key.
               You'll need to go through setup again.
             </p>
             <div className="reset-actions">
