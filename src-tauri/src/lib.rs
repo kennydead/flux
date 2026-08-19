@@ -3,23 +3,31 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
 
 fn agent_image() -> String {
-    format!("{}/agent:{}", IMAGE_REGISTRY, FARM_VERSION)
+    format!("{}/agent:{}", IMAGE_REGISTRY, farm_channel())
 }
 
-struct AuthSession {
-    stdin: Option<std::process::ChildStdin>,
-    child: std::process::Child,
+/// Release channel for farm images: FARM_CHANNEL from ~/farm/.env, or "latest".
+/// Same contract as the farm's own self-updater — staging installs opt in by
+/// setting FARM_CHANNEL=staging there.
+fn farm_channel() -> String {
+    if let Ok(content) = std::fs::read_to_string(farm_dir().join(".env")) {
+        for line in content.lines() {
+            if let Some(v) = line.trim().strip_prefix("FARM_CHANNEL=") {
+                let v = v.trim();
+                if !v.is_empty() {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    "latest".to_string()
 }
-
-type AuthState = Mutex<Option<AuthSession>>;
 
 fn farm_dir() -> PathBuf {
     let home = std::env::var("HOME")
@@ -109,125 +117,6 @@ async fn check_dashboard_health() -> bool {
     })
     .await
     .unwrap_or(false)
-}
-
-#[tauri::command]
-async fn check_claude_auth() -> bool {
-    let docker = docker_bin();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        silent_command(&docker)
-            .args([
-                "run", "--rm", "--platform", "linux/amd64",
-                "--entrypoint", "",
-                "-v", "claudeagentfarm_claude-home:/home/agent",
-                agent_image().as_str(), "claude", "auth", "status", "--json",
-            ])
-            .env("PATH", augmented_path())
-            .output()
-    })
-    .await;
-    match result {
-        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).contains("\"loggedIn\": true"),
-        _ => false,
-    }
-}
-
-#[tauri::command]
-fn start_claude_auth(app: AppHandle) -> Result<String, String> {
-    let docker = docker_bin();
-    let mut child = silent_command(&docker)
-        .args([
-            "run", "--rm", "-i", "--platform", "linux/amd64",
-            "--entrypoint", "",
-            "-v", "claudeagentfarm_claude-home:/home/agent",
-            agent_image().as_str(), "claude", "auth", "login",
-        ])
-        .env("PATH", augmented_path())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start auth: {e}"))?;
-
-    let stdout = child.stdout.take().ok_or("No stdout")?;
-    let stderr = child.stderr.take().ok_or("No stderr")?;
-    let stdin = child.stdin.take().ok_or("No stdin")?;
-
-    // Read both streams in a background thread — keep pipes open so the process
-    // doesn't get SIGPIPE when it writes the success message after code submission.
-    // The channel carries every line; we look for the URL from the main thread.
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let tx2 = tx.clone();
-
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().flatten() { let _ = tx.send(line); }
-    });
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().flatten() { let _ = tx2.send(line); }
-    });
-
-    // Wait up to 30 s for a URL to appear on either stream
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut url = String::new();
-    while std::time::Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(line) => {
-                if let Some(u) = line.split_whitespace().find(|s| s.starts_with("https://")) {
-                    url = u.to_string();
-                    break;
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(_) => continue,
-        }
-    }
-
-    if url.is_empty() {
-        let _ = child.kill();
-        return Err("No login URL found. Try running setup.sh manually.".to_string());
-    }
-
-    let state = app.state::<AuthState>();
-    *state.lock().unwrap() = Some(AuthSession { stdin: Some(stdin), child });
-
-    Ok(url)
-}
-
-#[tauri::command]
-fn complete_claude_auth(app: AppHandle, code: String) -> Result<(), String> {
-    let state = app.state::<AuthState>();
-    let mut lock = state.lock().unwrap();
-    let session = lock.as_mut().ok_or("No active auth session")?;
-
-    if let Some(ref mut stdin) = session.stdin {
-        writeln!(stdin, "{}", code.trim()).map_err(|e| e.to_string())?;
-        stdin.flush().map_err(|e| e.to_string())?;
-    }
-    drop(session.stdin.take()); // close stdin → signals EOF to the process
-
-    // Wait for process to exit — stdout/stderr are still being drained by the threads above
-    let _ = session.child.wait();
-    *lock = None;
-    drop(lock);
-
-    // Verify auth actually succeeded rather than trusting the exit code
-    let docker = docker_bin();
-    let out = silent_command(&docker)
-        .args([
-            "run", "--rm", "--platform", "linux/amd64",
-            "--entrypoint", "",
-            "-v", "claudeagentfarm_claude-home:/home/agent",
-            agent_image().as_str(), "claude", "auth", "status", "--json",
-        ])
-        .env("PATH", augmented_path())
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if String::from_utf8_lossy(&out.stdout).contains("\"loggedIn\": true") {
-        Ok(())
-    } else {
-        Err("Authentication did not complete. Please try again.".to_string())
-    }
 }
 
 #[tauri::command]
@@ -548,8 +437,8 @@ async fn confirm_quit(app: AppHandle) {
 }
 
 #[tauri::command]
-fn get_farm_version() -> &'static str {
-    FARM_VERSION
+fn get_farm_version() -> String {
+    farm_channel()
 }
 
 #[tauri::command]
@@ -745,7 +634,6 @@ fn start_host_bridge() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AuthState::new(None))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -876,9 +764,6 @@ pub fn run() {
             check_wsl_installed,
             install_wsl,
             check_docker_running,
-            check_claude_auth,
-            start_claude_auth,
-            complete_claude_auth,
             check_farm_running,
             check_dashboard_health,
             stop_farm,

@@ -83,7 +83,7 @@ export default function App() {
       if (await isFarmRunning()) { setState("running"); return; }
       const hasLicense = await invoke<boolean>("check_license");
       if (!hasLicense) { setState("home"); return; }
-      // Only mark as configured if setup was fully completed (including auth)
+      // Only mark as configured if setup was fully completed
       const setupDone = await invoke<boolean>("check_setup_complete");
       if (setupDone) setIsConfigured(true);
       setState("home");
@@ -194,7 +194,7 @@ export default function App() {
           <div className="reset-dialog">
             <h2>Reset Setup?</h2>
             <p>
-              This will stop the farm, remove your license key, and sign out of Claude.
+              This will stop the farm and remove your license key.
               You'll need to go through setup again.
             </p>
             <div className="reset-actions">
