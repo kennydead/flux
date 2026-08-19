@@ -31,6 +31,10 @@ services:
       COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR:-${PWD:-}}
       LICENSE_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/validate-license
       DIAGNOSTICS_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/receive-diagnostic
+      # Master switch for the LiteLLM gateway. Default OFF for now — the farm hard-locks to the
+      # user's own Claude subscription (connect it in Settings) and can't bill our gateway, with
+      # no .env setup needed. Set FARM_GATEWAY_ENABLED=true only once the gateway product is live.
+      FARM_GATEWAY_ENABLED: ${FARM_GATEWAY_ENABLED:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.yml:/farm/config.yml:ro
