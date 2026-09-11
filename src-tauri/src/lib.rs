@@ -582,6 +582,43 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
 }
 
 #[tauri::command]
+/// Pull the latest farm images for the current channel and recreate the dashboard stack.
+/// Backs the dashboard's in-app "Update" button on a Flux install (via /update-farm on the host
+/// bridge): the dashboard can't safely update itself (it would recreate its own backend
+/// mid-request, and on Windows its self-updater is disabled), so it delegates to the Flux app,
+/// which is an external process that survives the recreate. Synchronous — runs on the bridge
+/// thread. Uses --force-recreate so a pulled image actually replaces the running container.
+fn run_farm_update() -> Result<String, String> {
+    let channel = farm_channel();
+    let docker = docker_bin();
+    for img in ["agent", "dashboard-backend", "dashboard-frontend"] {
+        let src = format!("{IMAGE_REGISTRY}/{img}:{channel}");
+        let _ = silent_command(&docker).args(["pull", &src]).env("PATH", augmented_path()).output();
+        // The compose file pins :latest, so a staging install must retag channel→latest for the
+        // pulled image to take effect (no-op when channel is already "latest").
+        if channel != "latest" {
+            let dst = format!("{IMAGE_REGISTRY}/{img}:latest");
+            let _ = silent_command(&docker).args(["tag", &src, &dst]).env("PATH", augmented_path()).output();
+        }
+    }
+    let farm = farm_dir();
+    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
+    let out = silent_command(&docker)
+        .args([
+            "compose", "-f", &compose_file, "up", "-d", "--force-recreate",
+            "dashboard-db", "dashboard-backend", "dashboard-frontend",
+        ])
+        .current_dir(&farm)
+        .env("PATH", augmented_path())
+        .output()
+        .map_err(|e| format!("compose up failed: {e}"))?;
+    if out.status.success() {
+        Ok("updated".into())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
 fn start_host_bridge() {
     let farm = farm_dir();
     std::thread::spawn(move || {
@@ -595,6 +632,7 @@ fn start_host_bridge() {
                 let is_discuss = req.url() == "/open-discuss";
 
                 let is_open_terminal = req.url() == "/open-terminal";
+                let is_update = req.url() == "/update-farm";
 
                 let mut body = String::new();
                 if (is_discuss || is_open_terminal) && !is_options {
@@ -618,8 +656,22 @@ fn start_host_bridge() {
                     }
                 }
 
-                let status = if is_options { 204u16 } else { 200u16 };
-                let mut resp = tiny_http::Response::from_string("{\"ok\":true}")
+                // Body reported back for /update-farm so the dashboard can show success/failure.
+                let mut resp_body = String::from("{\"ok\":true}");
+                let mut status = if is_options { 204u16 } else { 200u16 };
+                if is_update && !is_options {
+                    match run_farm_update() {
+                        Ok(_) => resp_body = "{\"ok\":true,\"status\":\"updated\"}".to_string(),
+                        Err(e) => {
+                            status = 500;
+                            let esc = e.replace('\\', "\\\\").replace('"', "\\\"");
+                            let esc: String = esc.chars().take(400).collect();
+                            resp_body = format!("{{\"ok\":false,\"error\":\"{esc}\"}}");
+                        }
+                    }
+                }
+
+                let mut resp = tiny_http::Response::from_string(resp_body)
                     .with_status_code(status);
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "POST, OPTIONS").unwrap());
