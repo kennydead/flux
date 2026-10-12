@@ -695,6 +695,7 @@ fn desktop_notify(app: AppHandle, title: String, body: String) -> bool {
         let visible = w.is_visible().unwrap_or(false);
         let focused = w.is_focused().unwrap_or(false);
         if visible && focused {
+            eprintln!("[flux] desktop_notify skipped: window is in front");
             return false;
         }
     }
@@ -702,7 +703,9 @@ fn desktop_notify(app: AppHandle, title: String, body: String) -> bool {
     if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
         let _ = n.request_permission();
     }
-    n.builder().title(title).body(body).show().is_ok()
+    let res = n.builder().title(title.clone()).body(body).show();
+    eprintln!("[flux] desktop_notify '{}' -> permission {:?}, shown {:?}", title, n.permission_state().ok(), res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+    res.is_ok()
 }
 
 pub fn run() {
