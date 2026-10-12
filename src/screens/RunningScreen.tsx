@@ -39,9 +39,12 @@ export default function RunningScreen({ onBack }: Props) {
     window.addEventListener("message", onMessage);
     // The OS window's focus (the page's own focus event may not fire when focus goes to the frame).
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
     getCurrentWindow().onFocusChanged(({ payload: focused }) => { if (focused) onFocus(); })
-      .then((u) => { unlisten = u; }).catch(() => window.addEventListener("focus", onFocus));
+      .then((u) => { if (cancelled) u(); else unlisten = u; })
+      .catch(() => { if (!cancelled) window.addEventListener("focus", onFocus); });
     return () => {
+      cancelled = true;
       window.removeEventListener("message", onMessage);
       window.removeEventListener("focus", onFocus);
       unlisten?.();
