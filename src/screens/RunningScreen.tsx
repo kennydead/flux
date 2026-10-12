@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./RunningScreen.css";
 
 interface Props {
@@ -12,7 +13,7 @@ export default function RunningScreen({ onBack }: Props) {
   const [frameNonce, setFrameNonce] = useState(0);
   const failCount = useRef(0);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const pendingPath = useRef<string | null>(null);
+  const pendingPath = useRef<{ path: string; at: number } | null>(null);
 
   // Desktop notifications: the dashboard (in the frame) hands up the farm notifications that need
   // the owner; Flux shows them as system notifications when its window is not in front. Clicking a
@@ -20,22 +21,31 @@ export default function RunningScreen({ onBack }: Props) {
   // is about.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
-      if (e.origin !== "http://localhost:5174") return;
+      if (e.origin !== "http://localhost:5174" || e.source !== frameRef.current?.contentWindow) return;
       const d = e.data as { source?: string; type?: string; title?: string; body?: string; path?: string } | null;
       if (!d || d.source !== "agent-farm" || d.type !== "desktop-notification") return;
       invoke<boolean>("desktop_notify", { title: d.title ?? "Agent Farm", body: d.body ?? "" })
-        .then((shown) => { if (shown && d.path) pendingPath.current = d.path; })
+        .then((shown) => { if (shown && d.path) pendingPath.current = { path: d.path, at: Date.now() }; })
         .catch(() => {});
     };
+    // Desktop notifications can't report a click, so "focus soon after a notification" stands in
+    // for it: only within a minute, and only once — a later alt-tab never moves the dashboard.
     const onFocus = () => {
-      const path = pendingPath.current;
-      if (!path) return;
+      const p = pendingPath.current;
       pendingPath.current = null;
-      frameRef.current?.contentWindow?.postMessage({ source: "flux", type: "navigate", path }, "http://localhost:5174");
+      if (!p || Date.now() - p.at > 60_000) return;
+      frameRef.current?.contentWindow?.postMessage({ source: "flux", type: "navigate", path: p.path }, "http://localhost:5174");
     };
     window.addEventListener("message", onMessage);
-    window.addEventListener("focus", onFocus);
-    return () => { window.removeEventListener("message", onMessage); window.removeEventListener("focus", onFocus); };
+    // The OS window's focus (the page's own focus event may not fire when focus goes to the frame).
+    let unlisten: (() => void) | null = null;
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => { if (focused) onFocus(); })
+      .then((u) => { unlisten = u; }).catch(() => window.addEventListener("focus", onFocus));
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("focus", onFocus);
+      unlisten?.();
+    };
   }, []);
 
   // Poll farm health so a dead dashboard shows a message instead of a black window

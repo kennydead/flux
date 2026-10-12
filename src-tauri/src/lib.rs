@@ -684,7 +684,6 @@ fn start_host_bridge() {
     });
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// A farm notification that needs the owner (ticket waiting for approval, stage ready, something
 /// blocked) as a macOS / Windows notification — only when the Flux window is not in front, since
 /// the dashboard already shows it otherwise. Returns true when a notification was shown.
@@ -708,8 +707,20 @@ fn desktop_notify(app: AppHandle, title: String, body: String) -> bool {
     res.is_ok()
 }
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One Flux at a time: a second launch (e.g. Windows starting Flux again from a clicked
+        // notification) brings the running window forward instead of starting a second copy.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| { show_main_window(app); }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -853,6 +864,15 @@ pub fn run() {
             check_for_update,
             desktop_notify,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application")
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: clicking a notification (or the Dock icon) while the window is hidden to the
+            // tray re-activates the app — bring the window back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+            let _ = (app, event);
+        })
 }
