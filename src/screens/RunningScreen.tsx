@@ -11,6 +11,32 @@ export default function RunningScreen({ onBack }: Props) {
   const [unreachable, setUnreachable] = useState(false);
   const [frameNonce, setFrameNonce] = useState(0);
   const failCount = useRef(0);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const pendingPath = useRef<string | null>(null);
+
+  // Desktop notifications: the dashboard (in the frame) hands up the farm notifications that need
+  // the owner; Flux shows them as system notifications when its window is not in front. Clicking a
+  // notification brings Flux forward — on that focus the dashboard opens the page the notification
+  // is about.
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== "http://localhost:5174") return;
+      const d = e.data as { source?: string; type?: string; title?: string; body?: string; path?: string } | null;
+      if (!d || d.source !== "agent-farm" || d.type !== "desktop-notification") return;
+      invoke<boolean>("desktop_notify", { title: d.title ?? "Agent Farm", body: d.body ?? "" })
+        .then((shown) => { if (shown && d.path) pendingPath.current = d.path; })
+        .catch(() => {});
+    };
+    const onFocus = () => {
+      const path = pendingPath.current;
+      if (!path) return;
+      pendingPath.current = null;
+      frameRef.current?.contentWindow?.postMessage({ source: "flux", type: "navigate", path }, "http://localhost:5174");
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("focus", onFocus);
+    return () => { window.removeEventListener("message", onMessage); window.removeEventListener("focus", onFocus); };
+  }, []);
 
   // Poll farm health so a dead dashboard shows a message instead of a black window
   useEffect(() => {
@@ -35,6 +61,7 @@ export default function RunningScreen({ onBack }: Props) {
   return (
     <div className="running-wrap">
       <iframe
+        ref={frameRef}
         key={frameNonce}
         className="dashboard-frame"
         src="http://localhost:5174"

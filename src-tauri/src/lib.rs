@@ -619,6 +619,7 @@ fn run_farm_update() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
 fn start_host_bridge() {
     let farm = farm_dir();
     std::thread::spawn(move || {
@@ -684,8 +685,29 @@ fn start_host_bridge() {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// A farm notification that needs the owner (ticket waiting for approval, stage ready, something
+/// blocked) as a macOS / Windows notification — only when the Flux window is not in front, since
+/// the dashboard already shows it otherwise. Returns true when a notification was shown.
+#[tauri::command]
+fn desktop_notify(app: AppHandle, title: String, body: String) -> bool {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    if let Some(w) = app.get_webview_window("main") {
+        let visible = w.is_visible().unwrap_or(false);
+        let focused = w.is_focused().unwrap_or(false);
+        if visible && focused {
+            return false;
+        }
+    }
+    let n = app.notification();
+    if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
+        let _ = n.request_permission();
+    }
+    n.builder().title(title).body(body).show().is_ok()
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -826,6 +848,7 @@ pub fn run() {
             confirm_quit,
             get_farm_version,
             check_for_update,
+            desktop_notify,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application")
