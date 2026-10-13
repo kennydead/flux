@@ -582,6 +582,44 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
 }
 
 #[tauri::command]
+/// Pull the latest farm images for the current channel and recreate the dashboard stack.
+/// Backs the dashboard's in-app "Update" button on a Flux install (via /update-farm on the host
+/// bridge): the dashboard can't safely update itself (it would recreate its own backend
+/// mid-request, and on Windows its self-updater is disabled), so it delegates to the Flux app,
+/// which is an external process that survives the recreate. Synchronous — runs on the bridge
+/// thread. Uses --force-recreate so a pulled image actually replaces the running container.
+fn run_farm_update() -> Result<String, String> {
+    let channel = farm_channel();
+    let docker = docker_bin();
+    for img in ["agent", "dashboard-backend", "dashboard-frontend"] {
+        let src = format!("{IMAGE_REGISTRY}/{img}:{channel}");
+        let _ = silent_command(&docker).args(["pull", &src]).env("PATH", augmented_path()).output();
+        // The compose file pins :latest, so a staging install must retag channel→latest for the
+        // pulled image to take effect (no-op when channel is already "latest").
+        if channel != "latest" {
+            let dst = format!("{IMAGE_REGISTRY}/{img}:latest");
+            let _ = silent_command(&docker).args(["tag", &src, &dst]).env("PATH", augmented_path()).output();
+        }
+    }
+    let farm = farm_dir();
+    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
+    let out = silent_command(&docker)
+        .args([
+            "compose", "-f", &compose_file, "up", "-d", "--force-recreate",
+            "dashboard-db", "dashboard-backend", "dashboard-frontend",
+        ])
+        .current_dir(&farm)
+        .env("PATH", augmented_path())
+        .output()
+        .map_err(|e| format!("compose up failed: {e}"))?;
+    if out.status.success() {
+        Ok("updated".into())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+#[tauri::command]
 fn start_host_bridge() {
     let farm = farm_dir();
     std::thread::spawn(move || {
@@ -595,6 +633,7 @@ fn start_host_bridge() {
                 let is_discuss = req.url() == "/open-discuss";
 
                 let is_open_terminal = req.url() == "/open-terminal";
+                let is_update = req.url() == "/update-farm";
 
                 let mut body = String::new();
                 if (is_discuss || is_open_terminal) && !is_options {
@@ -618,8 +657,22 @@ fn start_host_bridge() {
                     }
                 }
 
-                let status = if is_options { 204u16 } else { 200u16 };
-                let mut resp = tiny_http::Response::from_string("{\"ok\":true}")
+                // Body reported back for /update-farm so the dashboard can show success/failure.
+                let mut resp_body = String::from("{\"ok\":true}");
+                let mut status = if is_options { 204u16 } else { 200u16 };
+                if is_update && !is_options {
+                    match run_farm_update() {
+                        Ok(_) => resp_body = "{\"ok\":true,\"status\":\"updated\"}".to_string(),
+                        Err(e) => {
+                            status = 500;
+                            let esc = e.replace('\\', "\\\\").replace('"', "\\\"");
+                            let esc: String = esc.chars().take(400).collect();
+                            resp_body = format!("{{\"ok\":false,\"error\":\"{esc}\"}}");
+                        }
+                    }
+                }
+
+                let mut resp = tiny_http::Response::from_string(resp_body)
                     .with_status_code(status);
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "POST, OPTIONS").unwrap());
@@ -631,9 +684,44 @@ fn start_host_bridge() {
     });
 }
 
+/// A farm notification that needs the owner (ticket waiting for approval, stage ready, something
+/// blocked) as a macOS / Windows notification — only when the Flux window is not in front, since
+/// the dashboard already shows it otherwise. Returns true when a notification was shown.
+#[tauri::command]
+fn desktop_notify(app: AppHandle, title: String, body: String) -> bool {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    if let Some(w) = app.get_webview_window("main") {
+        let visible = w.is_visible().unwrap_or(false);
+        let focused = w.is_focused().unwrap_or(false);
+        if visible && focused {
+            eprintln!("[flux] desktop_notify skipped: window is in front");
+            return false;
+        }
+    }
+    let n = app.notification();
+    if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
+        let _ = n.request_permission();
+    }
+    let res = n.builder().title(title.clone()).body(body).show();
+    eprintln!("[flux] desktop_notify '{}' -> permission {:?}, shown {:?}", title, n.permission_state().ok(), res.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+    res.is_ok()
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One Flux at a time: a second launch (e.g. Windows starting Flux again from a clicked
+        // notification) brings the running window forward instead of starting a second copy.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| { show_main_window(app); }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -774,7 +862,17 @@ pub fn run() {
             confirm_quit,
             get_farm_version,
             check_for_update,
+            desktop_notify,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application")
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: clicking a notification (or the Dock icon) while the window is hidden to the
+            // tray re-activates the app — bring the window back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+            let _ = (app, event);
+        })
 }

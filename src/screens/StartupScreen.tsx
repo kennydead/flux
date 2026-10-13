@@ -86,10 +86,17 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       }
       set("pull", "done", anyUpdated ? "updated to latest version" : "");
 
-      // Start services
+      // Start services. When a new image was just pulled, FORCE-RECREATE: a plain `up -d`
+      // does not reliably replace a running container after its image changed, so an update
+      // would silently no-op (the farm keeps running the OLD code) until the container is
+      // manually removed. Recreating only when anyUpdated avoids churn on an unchanged launch.
       set("start", "active");
       await invoke("run_docker_compose", {
-        subArgs: ["up", "-d", "dashboard-db", "dashboard-backend", "dashboard-frontend"],
+        subArgs: [
+          "up", "-d",
+          ...(anyUpdated ? ["--force-recreate"] : []),
+          "dashboard-db", "dashboard-backend", "dashboard-frontend",
+        ],
       });
       set("start", "done");
 
