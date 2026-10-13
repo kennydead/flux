@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./RunningScreen.css";
 
 interface Props {
@@ -22,8 +23,15 @@ export default function RunningScreen({ onBack }: Props) {
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== "http://localhost:5174" || e.source !== frameRef.current?.contentWindow) return;
-      const d = e.data as { source?: string; type?: string; title?: string; body?: string; path?: string } | null;
-      if (!d || d.source !== "agent-farm" || d.type !== "desktop-notification") return;
+      const d = e.data as { source?: string; type?: string; title?: string; body?: string; path?: string; url?: string } | null;
+      if (!d || d.source !== "agent-farm") return;
+      if (d.type === "open-url") {
+        // The webview ignores the frame's target="_blank" links / window.open: the dashboard hands
+        // external links here and they open in the default browser (http/https only).
+        if (typeof d.url === "string" && /^https?:\/\//i.test(d.url)) openUrl(d.url).catch(() => {});
+        return;
+      }
+      if (d.type !== "desktop-notification") return;
       invoke<boolean>("desktop_notify", { title: d.title ?? "Agent Farm", body: d.body ?? "" })
         .then((shown) => { if (shown && d.path) pendingPath.current = { path: d.path, at: Date.now() }; })
         .catch(() => {});
