@@ -112,3 +112,48 @@
   animation: spin 0.7s linear infinite;
   margin: 4px auto 0;
 }
+
+/* Farm update notice — small, non-blocking, over the dashboard frame */
+.farm-update-notice {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 99990;
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid rgba(79, 142, 247, 0.3);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.farm-update-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.farm-update-notice .pull-progress {
+  flex-basis: 100%;
+}
+
+.farm-update-notice-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  font-family: var(--font);
+}
+
+.farm-update-notice-close:hover {
+  color: var(--text);
+}

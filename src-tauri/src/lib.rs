@@ -5,6 +5,9 @@ use tauri::{
 };
 use std::path::PathBuf;
 
+mod docker_env;
+mod pull;
+
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
 
@@ -83,6 +86,14 @@ fn silent_command(program: &str) -> std::process::Command {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    cmd
+}
+
+/// Every docker / docker compose call Flux makes: the docker binary, an augmented PATH and (on
+/// macOS) the Flux-owned docker config — see docker_env.rs.
+fn docker_command() -> std::process::Command {
+    let mut cmd = silent_command(&docker_bin());
+    docker_env::apply(&mut cmd);
     cmd
 }
 
@@ -275,11 +286,9 @@ fn install_wsl() {
 
 #[tauri::command]
 async fn check_docker_running() -> bool {
-    let bin = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        silent_command(&bin)
+        docker_command()
             .args(["info", "--format", "{{.ServerVersion}}"])
-            .env("PATH", augmented_path())
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -290,11 +299,15 @@ async fn check_docker_running() -> bool {
 
 #[tauri::command]
 async fn run_command(program: String, args: Vec<String>) -> Result<String, String> {
-    let bin = if program == "docker" { docker_bin() } else if program == "python3" { python_bin() } else { program };
+    let is_docker = program == "docker";
+    let bin = if is_docker { docker_bin() } else if program == "python3" { python_bin() } else { program };
     tauri::async_runtime::spawn_blocking(move || {
-        let output = silent_command(&bin)
+        let mut cmd = if is_docker { docker_command() } else { silent_command(&bin) };
+        if !is_docker {
+            cmd.env("PATH", augmented_path());
+        }
+        let output = cmd
             .args(&args)
-            .env("PATH", augmented_path())
             .output()
             .map_err(|e| format!("Failed to run {bin}: {e}"))?;
         if output.status.success() {
@@ -309,25 +322,148 @@ async fn run_command(program: String, args: Vec<String>) -> Result<String, Strin
 
 /// Returns true if a new image was downloaded, false if already up to date.
 #[tauri::command]
-async fn pull_image(image: String) -> Result<bool, String> {
-    let bin = docker_bin();
-    tauri::async_runtime::spawn_blocking(move || {
-        let output = silent_command(&bin)
-            .args(["pull", &image])
-            .env("PATH", augmented_path())
-            .output()
-            .map_err(|e| format!("Failed to pull {image}: {e}"))?;
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let combined = format!("{stdout}{stderr}");
-            Ok(combined.contains("Downloaded newer image") || combined.contains("Pull complete"))
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).into_owned())
+async fn pull_image(app: AppHandle, image: String) -> Result<bool, String> {
+    pull::pull_images(Some(app), vec![image]).await
+}
+
+fn farm_image_refs(channel: &str) -> Vec<String> {
+    ["agent", "dashboard-backend", "dashboard-frontend"]
+        .iter()
+        .map(|img| format!("{IMAGE_REGISTRY}/{img}:{channel}"))
+        .collect()
+}
+
+/// The compose file pins :latest, so a staging install must retag channel→latest for the pulled
+/// image to take effect (no-op when the channel is already "latest").
+fn retag_channel_to_latest(channel: &str) {
+    if channel == "latest" {
+        return;
+    }
+    for img in ["agent", "dashboard-backend", "dashboard-frontend"] {
+        let src = format!("{IMAGE_REGISTRY}/{img}:{channel}");
+        let dst = format!("{IMAGE_REGISTRY}/{img}:latest");
+        let _ = docker_command().args(["tag", &src, &dst]).output();
+    }
+}
+
+/// Pull the farm images for the current channel with a progress stream (PROGRESS_EVENT).
+/// Returns true when any image changed.
+#[tauri::command]
+async fn pull_farm_images(app: AppHandle) -> Result<bool, String> {
+    let channel = farm_channel();
+    let updated = pull::pull_images(Some(app), farm_image_refs(&channel)).await?;
+    tauri::async_runtime::spawn_blocking(move || retag_channel_to_latest(&channel))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(updated)
+}
+
+/// Farm endpoint saying whether recreating the dashboard now would interrupt work (a run check,
+/// a preview, a planning session…). Old farms don't have it: 404 / no answer = "unknown → safe".
+const UPDATE_SAFETY_URL: &str = "http://localhost:8090/system/update-safety";
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+struct SafetyReason {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+struct UpdateSafety {
+    safe: bool,
+    /// false = the farm didn't answer (old farm / not running) and `safe` is the default.
+    known: bool,
+    reasons: Vec<SafetyReason>,
+}
+
+fn update_safety() -> UpdateSafety {
+    let unknown = UpdateSafety { safe: true, known: false, reasons: vec![] };
+    let Ok(resp) = ureq::get(UPDATE_SAFETY_URL).timeout(std::time::Duration::from_secs(5)).call() else {
+        return unknown;
+    };
+    let Ok(body) = resp.into_json::<serde_json::Value>() else { return unknown };
+    let Some(safe) = body["safe"].as_bool() else { return unknown };
+    let reasons = body["reasons"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|r| serde_json::from_value::<SafetyReason>(r.clone()).ok()).collect())
+        .unwrap_or_default();
+    UpdateSafety { safe, known: true, reasons }
+}
+
+fn safety_reasons_text(s: &UpdateSafety) -> String {
+    let texts: Vec<&str> = s.reasons.iter().map(|r| r.text.as_str()).filter(|t| !t.is_empty()).collect();
+    if texts.is_empty() { "work in progress".to_string() } else { texts.join(", ") }
+}
+
+#[tauri::command]
+async fn check_update_safety() -> UpdateSafety {
+    tauri::async_runtime::spawn_blocking(update_safety)
+        .await
+        .unwrap_or(UpdateSafety { safe: true, known: false, reasons: vec![] })
+}
+
+/// True when a running dashboard container runs an older image than the local :latest tag —
+/// an update was downloaded but not installed yet (e.g. deferred while the farm was busy, then
+/// Flux restarted). Stateless, so a deferred update survives a Flux restart.
+fn farm_update_pending_blocking() -> bool {
+    for svc in ["dashboard-backend", "dashboard-frontend"] {
+        let out = |args: &[&str]| -> String {
+            docker_command()
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default()
+        };
+        let project = "label=com.docker.compose.project=claudeagentfarm".to_string();
+        let service = format!("label=com.docker.compose.service={svc}");
+        let ids = out(&["ps", "-q", "--filter", &project, "--filter", &service]);
+        let Some(cid) = ids.lines().next().map(str::trim).filter(|s| !s.is_empty()) else { continue };
+        let running = out(&["inspect", "--format", "{{.Image}}", cid]);
+        let local = out(&["image", "inspect", "--format", "{{.Id}}", &format!("{IMAGE_REGISTRY}/{svc}:latest")]);
+        if !running.is_empty() && !local.is_empty() && running != local {
+            return true;
         }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+    false
+}
+
+#[tauri::command]
+async fn farm_update_pending() -> bool {
+    tauri::async_runtime::spawn_blocking(farm_update_pending_blocking)
+        .await
+        .unwrap_or(false)
+}
+
+/// Recreate the dashboard stack so freshly pulled images take effect. --force-recreate: a plain
+/// `up -d` does not reliably replace a running container after its image changed.
+fn recreate_dashboard() -> Result<(), String> {
+    let farm = farm_dir();
+    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
+    let out = docker_command()
+        .args([
+            "compose", "-f", &compose_file, "up", "-d", "--force-recreate",
+            "dashboard-db", "dashboard-backend", "dashboard-frontend",
+        ])
+        .current_dir(&farm)
+        .output()
+        .map_err(|e| format!("compose up failed: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// Install a downloaded farm update (the deferred-until-idle path).
+#[tauri::command]
+async fn apply_farm_update() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(recreate_dashboard)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -336,12 +472,10 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     let mut full_args = vec!["compose".to_string(), "-f".to_string(), compose_file];
     full_args.extend(sub_args);
-    let docker = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        let output = silent_command(&docker)
+        let output = docker_command()
             .args(&full_args)
             .current_dir(farm_dir())
-            .env("PATH", augmented_path())
             .output()
             .map_err(|e| format!("Failed to run docker compose: {e}"))?;
         if output.status.success() {
@@ -358,11 +492,9 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
 async fn stop_farm() -> Result<(), String> {
     let farm = farm_dir();
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
-    let docker = docker_bin();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = silent_command(&docker)
+        let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
-            .env("PATH", augmented_path())
             .output();
     }).await.map_err(|e| e.to_string())?;
     Ok(())
@@ -371,18 +503,13 @@ async fn stop_farm() -> Result<(), String> {
 #[tauri::command]
 async fn soft_reset() -> Result<(), String> {
     let farm = farm_dir();
-    let docker = docker_bin();
 
     // Stop running containers — preserve all volumes (credentials + database)
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
-    let _ = tauri::async_runtime::spawn_blocking({
-        let docker = docker.clone();
-        move || {
-            let _ = silent_command(&docker)
-                .args(["compose", "-f", &compose_file, "down"])
-                .env("PATH", augmented_path())
-                .output();
-        }
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _ = docker_command()
+            .args(["compose", "-f", &compose_file, "down"])
+            .output();
     }).await;
 
     // Remove farm directory (clears setup_complete flag and old scripts)
@@ -394,18 +521,13 @@ async fn soft_reset() -> Result<(), String> {
 #[tauri::command]
 async fn reset_setup() -> Result<(), String> {
     let farm = farm_dir();
-    let docker = docker_bin();
 
     // Stop running containers
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
-    let _ = tauri::async_runtime::spawn_blocking({
-        let docker = docker.clone();
-        move || {
-            let _ = silent_command(&docker)
-                .args(["compose", "-f", &compose_file, "down"])
-                .env("PATH", augmented_path())
-                .output();
-        }
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _ = docker_command()
+            .args(["compose", "-f", &compose_file, "down"])
+            .output();
     }).await;
 
     // Remove license key
@@ -413,9 +535,8 @@ async fn reset_setup() -> Result<(), String> {
 
     // Remove Claude auth volume
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let _ = silent_command(&docker)
+        let _ = docker_command()
             .args(["volume", "rm", "-f", "claudeagentfarm_claude-home"])
-            .env("PATH", augmented_path())
             .output();
     }).await;
 
@@ -426,11 +547,9 @@ async fn reset_setup() -> Result<(), String> {
 async fn confirm_quit(app: AppHandle) {
     let farm = farm_dir();
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
-    let docker = docker_bin();
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        let _ = silent_command(&docker)
+        let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
-            .env("PATH", augmented_path())
             .output();
     }).await;
     app.exit(0);
@@ -581,46 +700,95 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
     }
 }
 
-#[tauri::command]
-/// Pull the latest farm images for the current channel and recreate the dashboard stack.
-/// Backs the dashboard's in-app "Update" button on a Flux install (via /update-farm on the host
-/// bridge): the dashboard can't safely update itself (it would recreate its own backend
-/// mid-request, and on Windows its self-updater is disabled), so it delegates to the Flux app,
-/// which is an external process that survives the recreate. Synchronous — runs on the bridge
-/// thread. Uses --force-recreate so a pulled image actually replaces the running container.
-fn run_farm_update() -> Result<String, String> {
+/// Event telling the Flux window that a farm update is downloaded but waits for the farm to be
+/// idle (payload: UpdateSafety) — App.tsx polls the safety endpoint and installs it then.
+const DEFERRED_EVENT: &str = "farm-update-deferred";
+
+/// One farm update at a time (bridge requests, background downloads).
+static FARM_UPDATE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Pull the channel's images (with progress in the Flux window) and retag them for compose.
+/// Returns true when an image changed. Blocking — runs on the bridge thread / a worker thread.
+fn pull_farm_images_blocking(app: &AppHandle) -> Result<bool, String> {
     let channel = farm_channel();
-    let docker = docker_bin();
-    for img in ["agent", "dashboard-backend", "dashboard-frontend"] {
-        let src = format!("{IMAGE_REGISTRY}/{img}:{channel}");
-        let _ = silent_command(&docker).args(["pull", &src]).env("PATH", augmented_path()).output();
-        // The compose file pins :latest, so a staging install must retag channel→latest for the
-        // pulled image to take effect (no-op when channel is already "latest").
-        if channel != "latest" {
-            let dst = format!("{IMAGE_REGISTRY}/{img}:latest");
-            let _ = silent_command(&docker).args(["tag", &src, &dst]).env("PATH", augmented_path()).output();
-        }
+    let updated = tauri::async_runtime::block_on(pull::pull_images(Some(app.clone()), farm_image_refs(&channel)))?;
+    retag_channel_to_latest(&channel);
+    Ok(updated)
+}
+
+fn busy_body(message: &str, safety: &UpdateSafety) -> String {
+    serde_json::json!({ "ok": false, "busy": true, "error": message, "reasons": safety.reasons }).to_string()
+}
+
+/// /update-farm on the host bridge: the dashboard's in-app "Update" button on a Flux install.
+/// The dashboard can't safely update itself (it would recreate its own backend mid-request, and on
+/// Windows its self-updater is disabled), so it delegates to Flux, an external process that
+/// survives the recreate. Returns (HTTP status, JSON body) in the shape the dashboard reads:
+/// 200 {"ok":true,"status":"updated"} or an error status with {"ok":false,"error":…}.
+/// When the farm is busy (update-safety says not safe) nothing is recreated: the reply is 409
+/// busy with the reasons, the update downloads in the background and Flux installs it when the
+/// farm is idle.
+fn run_farm_update(app: &AppHandle) -> (u16, String) {
+    use std::sync::atomic::Ordering;
+    if FARM_UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
+        let msg = "A farm update is already in progress.";
+        return (409, serde_json::json!({ "ok": false, "busy": true, "error": msg, "reasons": [] }).to_string());
     }
-    let farm = farm_dir();
-    let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
-    let out = silent_command(&docker)
-        .args([
-            "compose", "-f", &compose_file, "up", "-d", "--force-recreate",
-            "dashboard-db", "dashboard-backend", "dashboard-frontend",
-        ])
-        .current_dir(&farm)
-        .env("PATH", augmented_path())
-        .output()
-        .map_err(|e| format!("compose up failed: {e}"))?;
-    if out.status.success() {
-        Ok("updated".into())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+
+    let pre = update_safety();
+    if !pre.safe {
+        let msg = format!(
+            "The farm is busy (waiting for: {}). The update downloads now and installs automatically when the farm is idle.",
+            safety_reasons_text(&pre)
+        );
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            let res = pull_farm_images_blocking(&app2);
+            FARM_UPDATE_RUNNING.store(false, Ordering::SeqCst);
+            match res {
+                Ok(updated) if updated || farm_update_pending_blocking() => {
+                    let _ = app2.emit(DEFERRED_EVENT, update_safety());
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("[flux] background farm update download failed: {e}"),
+            }
+        });
+        return (409, busy_body(&msg, &pre));
+    }
+
+    let result = (|| -> Result<Option<UpdateSafety>, String> {
+        let updated = pull_farm_images_blocking(app)?;
+        // The pull can take minutes — work may have started meanwhile.
+        let post = update_safety();
+        if !post.safe {
+            if updated || farm_update_pending_blocking() {
+                let _ = app.emit(DEFERRED_EVENT, post.clone());
+            }
+            return Ok(Some(post));
+        }
+        recreate_dashboard()?;
+        Ok(None)
+    })();
+    FARM_UPDATE_RUNNING.store(false, Ordering::SeqCst);
+
+    match result {
+        Ok(None) => (200, "{\"ok\":true,\"status\":\"updated\"}".to_string()),
+        Ok(Some(post)) => {
+            let msg = format!(
+                "Update downloaded — it installs automatically when the farm is idle (waiting for: {}).",
+                safety_reasons_text(&post)
+            );
+            (409, busy_body(&msg, &post))
+        }
+        Err(e) => {
+            let e: String = e.chars().take(400).collect();
+            (500, serde_json::json!({ "ok": false, "error": e }).to_string())
+        }
     }
 }
 
 #[tauri::command]
-fn start_host_bridge() {
+fn start_host_bridge(app: AppHandle) {
     let farm = farm_dir();
     std::thread::spawn(move || {
         let server = match tiny_http::Server::http("127.0.0.1:8092") {
@@ -661,15 +829,9 @@ fn start_host_bridge() {
                 let mut resp_body = String::from("{\"ok\":true}");
                 let mut status = if is_options { 204u16 } else { 200u16 };
                 if is_update && !is_options {
-                    match run_farm_update() {
-                        Ok(_) => resp_body = "{\"ok\":true,\"status\":\"updated\"}".to_string(),
-                        Err(e) => {
-                            status = 500;
-                            let esc = e.replace('\\', "\\\\").replace('"', "\\\"");
-                            let esc: String = esc.chars().take(400).collect();
-                            resp_body = format!("{{\"ok\":false,\"error\":\"{esc}\"}}");
-                        }
-                    }
+                    let (code, body) = run_farm_update(&app);
+                    status = code;
+                    resp_body = body;
                 }
 
                 let mut resp = tiny_http::Response::from_string(resp_body)
@@ -728,6 +890,9 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                docker_env::set_app_data_dir(dir);
+            }
             let show    = MenuItem::with_id(app, "show",    "Show Flux",             true, None::<&str>)?;
             let stop    = MenuItem::with_id(app, "stop",    "Stop Farm",              true, None::<&str>)?;
             let migrate = MenuItem::with_id(app, "migrate", "Migrate from Terminal…", true, None::<&str>)?;
@@ -844,6 +1009,10 @@ pub fn run() {
             extract_resources,
             run_command,
             pull_image,
+            pull_farm_images,
+            check_update_safety,
+            farm_update_pending,
+            apply_farm_update,
             run_docker_compose,
             run_detached,
             start_host_bridge,
