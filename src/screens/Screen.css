@@ -363,6 +363,14 @@
   to { transform: rotate(360deg); }
 }
 
+.step-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .step-label {
   font-size: 14px;
   font-weight: 500;

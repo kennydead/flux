@@ -36,6 +36,18 @@
   margin-top: 12px;
 }
 
+.home-update-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.home-update-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 .home-update-link {
   background: none;
   border: none;

@@ -26,3 +26,6 @@ serde_json = "1"
 ureq = { version = "2", features = ["json"] }
 tiny_http = "0.12"
 getrandom = "0.2"
+# Docker Engine API: image pulls with byte-level progress, no CLI credential helpers
+bollard = { version = "0.21", default-features = false, features = ["pipe"] }
+futures-util = "0.3"
