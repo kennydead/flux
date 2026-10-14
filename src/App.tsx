@@ -148,6 +148,9 @@ export default function App() {
     async function init() {
       const afterFluxUpdate = takeUpdateFarmOnLaunch();
       if (await isFarmRunning()) {
+        // A running farm means setup was done: without this, stopping the farm sent "Get started"
+        // back through license + Docker setup (the key was still saved).
+        setIsConfigured(true);
         // Flux just updated itself: update the farm too (StartupScreen keeps a busy farm running
         // and defers the install until it is idle).
         if (afterFluxUpdate) { setIsConfigured(true); setState("startup"); return; }
