@@ -5,6 +5,7 @@ Listens on localhost:8092 and opens a terminal for interactive planning sessions
 import json
 import os
 import platform
+import re
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -23,10 +24,6 @@ except OSError:
 def _open_terminal(project_dir: str, project_id: str) -> None:
     workspace = os.path.join(project_dir, "planning-workspace")
     os.makedirs(workspace, exist_ok=True)
-
-    env_flags = "-e DASHBOARD_URL=http://dashboard-backend:8090"
-    if project_id:
-        env_flags += f" -e DASHBOARD_PROJECT_ID={project_id}"
 
     # claude-home volume carries the Claude Code auth credentials
     docker_args = [
@@ -57,19 +54,19 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
         subprocess.Popen(["osascript", "-e", script])
 
     elif IS_WSL:
-        # Pass args as a list to wt.exe to avoid Windows quoting issues
         try:
             subprocess.Popen(["wt.exe", "-w", "0", "nt", "--"] + docker_args)
         except FileNotFoundError:
             subprocess.Popen(["cmd.exe", "/c", "start", "Farm Discuss"] + docker_args)
 
     elif SYSTEM == "Windows":
-        # Write a temp .bat file to avoid embedded-quote issues in cmd /k "..."
         import tempfile
+        # Write to the OS temp dir, not the project dir, so we don't litter
+        # .bat files next to the customer's code
         bat = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".bat", delete=False, dir=project_dir
+            mode="w", suffix=".bat", delete=False
         )
-        bat.write("@echo off\n" + " ".join(docker_args) + "\npause\n")
+        bat.write("@echo off\n" + " ".join(docker_args) + "\npause\ndel \"%~f0\"\n")
         bat.close()
         subprocess.Popen(
             ["cmd.exe", "/c", "start", "Farm Discuss", "cmd", "/k", bat.name]
@@ -92,6 +89,43 @@ def _open_terminal(project_dir: str, project_id: str) -> None:
                 continue
 
 
+def _to_native_path(path: str) -> str:
+    """Convert a Linux/Git-Bash style path to the native OS path.
+
+    The backend sends host_workdir derived from COMPOSE_PROJECT_DIR. When
+    Docker is run from Git Bash or MSYS on Windows, ${PWD} produces
+    /c/Users/... style paths. Convert those to C:\\Users\\... for Windows
+    or /mnt/c/Users/... for WSL before passing to the OS.
+    """
+    # /c/Users/... → platform-specific form
+    m = re.match(r'^/([a-zA-Z])(/.*)$', path)
+    if m:
+        drive, rest = m.group(1), m.group(2)
+        if SYSTEM == "Windows":
+            return f"{drive.upper()}:{rest.replace('/', chr(92))}"
+        if IS_WSL:
+            return f"/mnt/{drive.lower()}{rest}"
+    return path
+
+
+def _open_folder_in_terminal(path: str) -> None:
+    path = _to_native_path(path)
+
+    if SYSTEM == "Darwin":
+        subprocess.Popen(["open", "-a", "Terminal", path])
+
+    elif IS_WSL:
+        try:
+            subprocess.Popen(["wt.exe", "-w", "0", "nt", "--", "bash", "-c", f"cd '{path}'; exec bash"])
+        except FileNotFoundError:
+            subprocess.Popen(["cmd.exe", "/c", f'start "Project Terminal" bash -c "cd \'{path}\'; exec bash"'])
+
+    elif SYSTEM == "Windows":
+        # start's /d switch sets the working dir — nesting a quoted cd inside
+        # cmd /k breaks cmd.exe's quote parsing
+        subprocess.Popen(f'start "Project Terminal" /d "{path}" cmd', shell=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -104,20 +138,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = {}
+        if length:
+            try:
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                pass
+
         if self.path == "/open-discuss":
-            length = int(self.headers.get("Content-Length", 0))
-            body = {}
-            if length:
-                try:
-                    body = json.loads(self.rfile.read(length))
-                except Exception:
-                    pass
             _open_terminal(PROJECT_DIR, body.get("projectId", ""))
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+
+        elif self.path == "/open-terminal":
+            path = body.get("path", "")
+            if path:
+                _open_folder_in_terminal(path)
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
         else:
             self.send_response(404)
             self._cors()
