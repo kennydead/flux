@@ -620,6 +620,44 @@ fn to_windows_path(path: &str) -> String {
     }
 }
 
+/// This computer's address on the local network and its Bonjour/host name, for the dashboard's
+/// "Access from other devices" setting (the farm runs in Docker and cannot see either). The UDP
+/// "connect" sends nothing; it only asks the OS which interface would route outward.
+#[tauri::command]
+fn host_network_info() -> serde_json::Value {
+    let mut ips: Vec<String> = Vec::new();
+    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("192.0.2.1:9").is_ok() {
+            if let Ok(addr) = sock.local_addr() {
+                let ip = addr.ip();
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    ips.push(ip.to_string());
+                }
+            }
+        }
+    }
+    serde_json::json!({ "ips": ips, "hostname": local_hostname() })
+}
+
+fn local_hostname() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = silent_command("scutil").args(["--get", "LocalHostName"]).output().ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return (!name.is_empty()).then(|| format!("{name}.local"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty());
+    }
+    #[allow(unreachable_code)]
+    {
+        let out = std::process::Command::new("hostname").output().ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
 /// Origins allowed to drive the host bridge: the dashboard (in Flux's frame or a browser tab) and
 /// Flux itself. A browser always sends Origin on these cross-origin POSTs, so any other website is
 /// refused (audit 2026-10-15: with `Access-Control-Allow-Origin: *` any page the user visited
@@ -1060,6 +1098,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            host_network_info,
             get_farm_dir,
             check_license,
             validate_license_key,

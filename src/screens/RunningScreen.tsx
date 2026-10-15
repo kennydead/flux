@@ -31,6 +31,13 @@ export default function RunningScreen({ onBack }: Props) {
         if (typeof d.url === "string" && /^https?:\/\//i.test(d.url)) openUrl(d.url).catch(() => {});
         return;
       }
+      if (d.type === "host-info") {
+        // "Access from other devices" in the dashboard's settings: this computer's network address.
+        invoke<{ ips: string[]; hostname: string | null }>("host_network_info")
+          .then((info) => frameRef.current?.contentWindow?.postMessage({ source: "flux", type: "host-info", ...info }, "http://localhost:5174"))
+          .catch(() => {});
+        return;
+      }
       if (d.type !== "desktop-notification") return;
       invoke<boolean>("desktop_notify", { title: d.title ?? "Agent Farm", body: d.body ?? "" })
         .then((shown) => { if (shown && d.path) pendingPath.current = { path: d.path, at: Date.now() }; })
