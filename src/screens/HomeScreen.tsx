@@ -4,6 +4,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import Button from "../components/Button";
 import appIcon from "../assets/app-icon.png";
+import { markUpdateFarmOnLaunch } from "../farmUpdate";
 import "./HomeScreen.css";
 
 interface Props {
@@ -67,6 +68,8 @@ export default function HomeScreen({ onStart }: Props) {
         }
         if (event.event === "Finished") setDownloadProgress(100);
       });
+      // The relaunched Flux updates the farm too (waiting until the farm is idle).
+      markUpdateFarmOnLaunch();
       await relaunch();
     } catch {
       setDownloading(false);
@@ -86,14 +89,20 @@ export default function HomeScreen({ onStart }: Props) {
         <div className="home-update-banner">
           {downloading ? (
             <>
-              <span>{downloadProgress < 100 ? `Downloading… ${downloadProgress}%` : "Installing…"}</span>
+              <span>{downloadProgress < 100 ? `Downloading… ${downloadProgress}%` : "Installing… Flux restarts, then updates the farm"}</span>
               <div className="home-update-progress">
                 <div className="home-update-progress-bar" style={{ width: `${downloadProgress}%` }} />
               </div>
             </>
           ) : (
             <>
-              <span>Update available: {updateVersion}</span>
+              <span className="home-update-text">
+                Update available: {updateVersion}
+                <span className="home-update-sub">
+                  Updating Flux also updates the farm. The farm part installs once the farm is idle,
+                  so running work isn't interrupted.
+                </span>
+              </span>
               <button className="home-update-link" onClick={installUpdate}>
                 Install & Restart →
               </button>
@@ -149,7 +158,7 @@ export default function HomeScreen({ onStart }: Props) {
       {/* Footer */}
       <footer className="home-footer">
         <div className="home-version-row">
-          <span className="home-version">v0.4.0</span>
+          <span className="home-version">v0.5.0</span>
           <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
             {checkingUpdate ? "Checking…" : "Check for updates"}
           </button>

@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Layout from "../components/Layout";
 import Button from "../components/Button";
+import { PullProgressBar, usePullProgress } from "../components/PullProgress";
+import type { UpdateSafety } from "../farmUpdate";
 import "./Screen.css";
 
 interface Props {
-  onReady: () => void;
+  /** `deferred` = a farm update was downloaded but waits until the farm is idle. */
+  onReady: (deferred?: UpdateSafety) => void;
   onResetSetup: () => void;
 }
 
@@ -31,6 +34,7 @@ const AGENT_TAGS = ["claudeagentfarm-coder", "claudeagentfarm-reviewer", "claude
 export default function StartupScreen({ onReady, onResetSetup }: Props) {
   const [steps, setSteps] = useState<Step[]>(INITIAL_STEPS);
   const [error, setError] = useState("");
+  const pullProgress = usePullProgress();
 
   const set = (id: string, state: Step["state"], note?: string) =>
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, state, ...(note !== undefined ? { note } : {}) } : s)));
@@ -44,19 +48,14 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
         await delay(500);
         set(step.id, "done");
       }
-      setTimeout(onReady, 500);
+      setTimeout(() => onReady(), 500);
       return;
     }
 
     try {
-      // Resolve pinned image tags from Rust constant
+      // The agent image for the farm's channel (pull_farm_images pulls all three in Rust)
       const version = await invoke<string>("get_farm_version");
-      const reg = "ghcr.io/kennydead/claude-agent-farm";
-      const images = [
-        `${reg}/agent:${version}`,
-        `${reg}/dashboard-backend:${version}`,
-        `${reg}/dashboard-frontend:${version}`,
-      ];
+      const agentImage = `ghcr.io/kennydead/claude-agent-farm/agent:${version}`;
 
       // 1. Verify Docker is running
       set("docker", "active");
@@ -73,28 +72,44 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       await invoke<string>("extract_resources");
       set("extract", "done");
 
-      // 3. Pull images + tag
-      const imageNames = ["agent", "dashboard-backend", "dashboard-frontend"];
-      let anyUpdated = false;
-      for (let i = 0; i < images.length; i++) {
-        set("pull", "active", `${imageNames[i]} (${i + 1}/${images.length}) — can take a few minutes after an update`);
-        const updated = await invoke<boolean>("pull_image", { image: images[i] });
-        if (updated) anyUpdated = true;
-      }
+      // Is the farm already up? (Flux relaunched after an update, or "Get Started" while running.)
+      // Then an update must not recreate the dashboard in the middle of work.
+      const farmWasUp = await invoke<boolean>("check_dashboard_health").catch(() => false);
+
+      // 3. Pull images (progress arrives as "farm-pull-progress" events) + tag
+      set("pull", "active", "can take a few minutes after an update");
+      const anyUpdated = await invoke<boolean>("pull_farm_images");
       for (const tag of AGENT_TAGS) {
-        await invoke("run_command", { program: "docker", args: ["tag", images[0], tag] });
+        await invoke("run_command", { program: "docker", args: ["tag", agentImage, tag] });
       }
       set("pull", "done", anyUpdated ? "updated to latest version" : "");
 
-      // Start services. When a new image was just pulled, FORCE-RECREATE: a plain `up -d`
-      // does not reliably replace a running container after its image changed, so an update
-      // would silently no-op (the farm keeps running the OLD code) until the container is
-      // manually removed. Recreating only when anyUpdated avoids churn on an unchanged launch.
+      // Start services. When a new image was just pulled (or an earlier download is still not
+      // installed), FORCE-RECREATE: a plain `up -d` does not reliably replace a running container
+      // after its image changed. Recreating only then avoids churn on an unchanged launch.
       set("start", "active");
+      const pending = anyUpdated
+        || (farmWasUp && await invoke<boolean>("farm_update_pending").catch(() => false));
+      if (farmWasUp && pending) {
+        const safety = await invoke<UpdateSafety>("check_update_safety")
+          .catch(() => ({ safe: true, known: false, reasons: [] } as UpdateSafety));
+        if (!safety.safe) {
+          // Busy (run check, preview, planning…): keep the running farm, install when idle.
+          set("start", "done", "the update installs when the farm is idle");
+          set("bridge", "active");
+          invoke("start_host_bridge").catch(() => {});
+          set("bridge", "done");
+          set("ready", "active");
+          await waitForDashboard();
+          set("ready", "done");
+          setTimeout(() => onReady(safety), 600);
+          return;
+        }
+      }
       await invoke("run_docker_compose", {
         subArgs: [
           "up", "-d",
-          ...(anyUpdated ? ["--force-recreate"] : []),
+          ...(pending ? ["--force-recreate"] : []),
           "dashboard-db", "dashboard-backend", "dashboard-frontend",
         ],
       });
@@ -110,7 +125,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       await waitForDashboard();
       set("ready", "done");
 
-      setTimeout(onReady, 600);
+      setTimeout(() => onReady(), 600);
     } catch (e: any) {
       const msg = String(e);
       setError(msg);
@@ -159,10 +174,15 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
                   {step.state === "error"   && <span className="step-error-icon">✕</span>}
                   {step.state === "pending" && <span className="step-dot" />}
                 </div>
-                <span className="step-label">
-                  {step.label}
-                  {step.note && <span className="step-note"> — {step.note}</span>}
-                </span>
+                <div className="step-content">
+                  <span className="step-label">
+                    {step.label}
+                    {step.id === "pull" && step.state === "active" && pullProgress.progress?.image
+                      ? <span className="step-note"> — {pullProgress.progress.image} ({pullProgress.progress.index + 1}/{pullProgress.progress.count})</span>
+                      : step.note && <span className="step-note"> — {step.note}</span>}
+                  </span>
+                  {step.id === "pull" && step.state === "active" && <PullProgressBar state={pullProgress} />}
+                </div>
               </div>
             ))}
           </div>
