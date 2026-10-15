@@ -246,6 +246,8 @@ async fn connect() -> Result<Docker, String> {
 }
 
 /// One image through the Engine API. Returns whether the local image changed.
+const PULL_IDLE_SECS: u64 = 180;
+
 async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker) -> Result<bool, String> {
     let before = docker.inspect_image(image).await.ok().and_then(|i| i.id);
     let (name, tag) = split_ref(image);
@@ -253,7 +255,13 @@ async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker) -> Result
     let mut stream = docker.create_image(Some(opts), None, None);
     let short = short_name(image);
     let mut newer = false;
-    while let Some(item) = stream.next().await {
+    loop {
+        // bollard's request timeout covers only the response headers, not the streamed body: a
+        // network stall mid-layer hung the pull (and the update lock) forever (audit 2026-10-15).
+        let next = tokio::time::timeout(Duration::from_secs(PULL_IDLE_SECS), stream.next())
+            .await
+            .map_err(|_| format!("the download of {short} stalled (no data for {PULL_IDLE_SECS} s)"))?;
+        let Some(item) = next else { break };
         let info = item.map_err(|e| e.to_string())?;
         let status = info.status.unwrap_or_default();
         if status.contains("Downloaded newer image") {

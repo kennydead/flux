@@ -67,7 +67,7 @@ export default function App() {
       if (cancelled) return;
       if (!up) { setUpdatePending(false); return; }
       const safety = await invoke<UpdateSafety>("check_update_safety")
-        .catch(() => ({ safe: true, known: false, reasons: [] } as UpdateSafety));
+        .catch(() => ({ safe: false, known: false, reasons: [] } as UpdateSafety));
       if (cancelled) return;
       if (!safety.safe) {
         setWaitingFor(safety.reasons);
@@ -154,6 +154,9 @@ export default function App() {
         // Flux just updated itself: update the farm too (StartupScreen keeps a busy farm running
         // and defers the install until it is idle).
         if (afterFluxUpdate) { setIsConfigured(true); setState("startup"); return; }
+        // The farm survived a Flux restart/crash; the host bridge (Update farm, terminals) lives
+        // in Flux and must be started for this session too (audit 2026-10-15).
+        invoke("start_host_bridge").catch(() => {});
         setState("running");
         // An update downloaded earlier but never installed (deferred, then Flux restarted).
         if (await invoke<boolean>("farm_update_pending").catch(() => false)) {

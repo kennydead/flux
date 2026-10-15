@@ -379,12 +379,17 @@ struct UpdateSafety {
 }
 
 fn update_safety() -> UpdateSafety {
-    let unknown = UpdateSafety { safe: true, known: false, reasons: vec![] };
-    let Ok(resp) = ureq::get(UPDATE_SAFETY_URL).timeout(std::time::Duration::from_secs(5)).call() else {
-        return unknown;
+    // Only "this farm is too old to have the endpoint" (404) counts as safe by default. A timeout,
+    // an error or garbage means "not sure" and is NOT safe — retry later (audit 2026-10-15: one slow
+    // answer used to let a deferred update recreate the farm in the middle of work).
+    let unsure = UpdateSafety { safe: false, known: false, reasons: vec![] };
+    let resp = match ureq::get(UPDATE_SAFETY_URL).timeout(std::time::Duration::from_secs(5)).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(404, _)) => return UpdateSafety { safe: true, known: false, reasons: vec![] },
+        Err(_) => return unsure,
     };
-    let Ok(body) = resp.into_json::<serde_json::Value>() else { return unknown };
-    let Some(safe) = body["safe"].as_bool() else { return unknown };
+    let Ok(body) = resp.into_json::<serde_json::Value>() else { return unsure };
+    let Some(safe) = body["safe"].as_bool() else { return unsure };
     let reasons = body["reasons"]
         .as_array()
         .map(|a| a.iter().filter_map(|r| serde_json::from_value::<SafetyReason>(r.clone()).ok()).collect())
@@ -401,7 +406,7 @@ fn safety_reasons_text(s: &UpdateSafety) -> String {
 async fn check_update_safety() -> UpdateSafety {
     tauri::async_runtime::spawn_blocking(update_safety)
         .await
-        .unwrap_or(UpdateSafety { safe: true, known: false, reasons: vec![] })
+        .unwrap_or(UpdateSafety { safe: false, known: false, reasons: vec![] })
 }
 
 /// True when a running dashboard container runs an older image than the local :latest tag —
@@ -615,18 +620,60 @@ fn to_windows_path(path: &str) -> String {
     }
 }
 
+/// Origins allowed to drive the host bridge: the dashboard (in Flux's frame or a browser tab) and
+/// Flux itself. A browser always sends Origin on these cross-origin POSTs, so any other website is
+/// refused (audit 2026-10-15: with `Access-Control-Allow-Origin: *` any page the user visited
+/// could reach /open-terminal and /open-discuss, which build shell commands). Local programs send
+/// no Origin and are allowed — they can run commands anyway.
+const BRIDGE_ORIGINS: [&str; 5] = [
+    "http://localhost:5174", "http://127.0.0.1:5174",
+    "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost",
+];
+
+fn bridge_origin(req: &tiny_http::Request) -> Result<Option<String>, ()> {
+    match req.headers().iter().find(|h| h.field.equiv("Origin")) {
+        None => Ok(None),
+        Some(h) => {
+            let o = h.value.as_str();
+            if BRIDGE_ORIGINS.contains(&o) { Ok(Some(o.to_string())) } else { Err(()) }
+        }
+    }
+}
+
+/// A farm project id is a UUID; anything else never reaches a command line.
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36 && s.chars().enumerate().all(|(i, c)| {
+        if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
+    })
+}
+
+/// POSIX single-quoting: the shell expands nothing inside '…' ('\'' closes, escapes, reopens).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn open_folder_in_terminal(path: &str) {
+    // Only an existing directory, and nothing that could end a line or a command.
+    if path.contains(['\n', '\r', '\0']) || !std::path::Path::new(path).is_dir() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
-        let safe = path.replace('\\', "\\\\").replace('"', "\\\"");
+        // Shell-quote first (the command Terminal runs), then escape for the AppleScript string.
+        let cmd = format!("cd {}", shell_quote(path));
+        let safe = cmd.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!(
-            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script \"cd \\\"{safe}\\\"\""
+            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script \"{safe}\""
         );
         let _ = silent_command("osascript").args(["-e", &script]).spawn();
     }
 
     #[cfg(target_os = "windows")]
     {
+        // cmd.exe re-parses its command line: refuse its metacharacters outright.
+        if path.contains(['&', '|', '<', '>', '^', '%', '"']) {
+            return;
+        }
         // Use start's /d switch for the working directory — nesting a quoted
         // `cd /d "..."` string inside cmd /k breaks because cmd.exe doesn't
         // understand Rust's backslash-escaped quotes.
@@ -651,7 +698,7 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
         "-v".into(), format!("{}:/planning-workspace", workspace.to_string_lossy()),
         "-v".into(), format!("{}:/app/config.yml", farm.join("config.yml").to_string_lossy()),
     ];
-    if !project_id.is_empty() {
+    if !project_id.is_empty() && is_uuid(project_id) {
         docker_args.push("-e".into());
         docker_args.push(format!("DASHBOARD_PROJECT_ID={project_id}"));
     }
@@ -797,6 +844,14 @@ fn start_host_bridge(app: AppHandle) {
         };
         loop {
             if let Ok(mut req) = server.recv() {
+                let origin = match bridge_origin(&req) {
+                    Ok(o) => o,
+                    Err(()) => {
+                        let _ = req.respond(tiny_http::Response::from_string("{\"error\":\"forbidden origin\"}")
+                            .with_status_code(403));
+                        continue;
+                    }
+                };
                 let is_options = *req.method() == tiny_http::Method::Options;
                 let is_discuss = req.url() == "/open-discuss";
 
@@ -810,7 +865,7 @@ fn start_host_bridge(app: AppHandle) {
                 let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
 
                 let project_id = if is_discuss && !is_options {
-                    parsed["projectId"].as_str().map(String::from).unwrap_or_default()
+                    parsed["projectId"].as_str().filter(|s| is_uuid(s)).map(String::from).unwrap_or_default()
                 } else {
                     String::new()
                 };
@@ -836,7 +891,10 @@ fn start_host_bridge(app: AppHandle) {
 
                 let mut resp = tiny_http::Response::from_string(resp_body)
                     .with_status_code(status);
-                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                if let Some(o) = &origin {
+                    resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", o.as_bytes()).unwrap());
+                    resp.add_header(tiny_http::Header::from_bytes("Vary", "Origin").unwrap());
+                }
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "POST, OPTIONS").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap());
@@ -1044,4 +1102,47 @@ pub fn run() {
             }
             let _ = (app, event);
         })
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    #[test]
+    fn project_ids_must_be_uuids() {
+        assert!(is_uuid("a39dd42e-4e11-47f3-855a-b40b1e2b13b8"));
+        for bad in ["", "x; rm -rf ~", "a39dd42e-4e11-47f3-855a-b40b1e2b13b8; id", "a39dd42e 4e11 47f3 855a b40b1e2b13b8",
+                    "../../etc/passwd", "a39dd42e-4e11-47f3-855a-b40b1e2b13bZ"] {
+            assert!(!is_uuid(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn shell_quote_leaves_nothing_for_the_shell_to_expand() {
+        assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
+        assert_eq!(shell_quote("/tmp/$(id)`id`\"x"), "'/tmp/$(id)`id`\"x'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        // Round-trip through a real shell: the argument comes back byte for byte, nothing runs.
+        for s in ["/tmp/$(touch /tmp/flux-audit-pwned)", "a'b\"c`d`$HOME", "plain"] {
+            let out = std::process::Command::new("sh").arg("-c").arg(format!("printf %s {}", shell_quote(s)))
+                .output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), s);
+        }
+        assert!(!std::path::Path::new("/tmp/flux-audit-pwned").exists());
+    }
+
+    #[test]
+    fn only_existing_directories_are_opened() {
+        // open_folder_in_terminal returns before building any command for these.
+        for bad in ["/no/such/dir/$(id)", "/tmp\n; id", "/etc/hosts"] {
+            assert!(bad.contains(['\n', '\r', '\0']) || !std::path::Path::new(bad).is_dir());
+        }
+    }
+
+    #[test]
+    fn allowed_origins_are_the_dashboard_and_flux() {
+        assert!(BRIDGE_ORIGINS.contains(&"http://localhost:5174"));
+        assert!(!BRIDGE_ORIGINS.contains(&"https://evil.example"));
+        assert!(!BRIDGE_ORIGINS.contains(&"http://localhost:5174.evil.example"));
+    }
 }
