@@ -29,3 +29,4 @@ getrandom = "0.2"
 # Docker Engine API: image pulls with byte-level progress, no CLI credential helpers
 bollard = { version = "0.21", default-features = false, features = ["pipe"] }
 futures-util = "0.3"
+tokio = { version = "1", features = ["time"] }   # already in the tree via tauri; only for the pull stall timeout

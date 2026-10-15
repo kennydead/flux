@@ -78,9 +78,18 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
 
       // 3. Pull images (progress arrives as "farm-pull-progress" events) + tag
       set("pull", "active", "can take a few minutes after an update");
-      const anyUpdated = await invoke<boolean>("pull_farm_images");
-      for (const tag of AGENT_TAGS) {
-        await invoke("run_command", { program: "docker", args: ["tag", agentImage, tag] });
+      let anyUpdated = false;
+      try {
+        anyUpdated = await invoke<boolean>("pull_farm_images");
+      } catch (e) {
+        // The farm is already running (Flux relaunched after its own update): a failed download
+        // (offline, registry down) must not replace the working dashboard with an error screen.
+        if (!farmWasUp) throw e;
+        set("pull", "done", "couldn't download the farm update now — keeping the running farm");
+        invoke("start_host_bridge").catch(() => {});
+        await waitForDashboard();
+        setTimeout(() => onReady(), 600);
+        return;
       }
       set("pull", "done", anyUpdated ? "updated to latest version" : "");
 
@@ -92,7 +101,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
         || (farmWasUp && await invoke<boolean>("farm_update_pending").catch(() => false));
       if (farmWasUp && pending) {
         const safety = await invoke<UpdateSafety>("check_update_safety")
-          .catch(() => ({ safe: true, known: false, reasons: [] } as UpdateSafety));
+          .catch(() => ({ safe: false, known: false, reasons: [] } as UpdateSafety));
         if (!safety.safe) {
           // Busy (run check, preview, planning…): keep the running farm, install when idle.
           set("start", "done", "the update installs when the farm is idle");
@@ -105,6 +114,11 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
           setTimeout(() => onReady(safety), 600);
           return;
         }
+      }
+      // Point the agent aliases at the new image only now that it installs: retagging before a
+      // deferral made the still-running old backend start agents from the new image (audit).
+      for (const tag of AGENT_TAGS) {
+        await invoke("run_command", { program: "docker", args: ["tag", agentImage, tag] });
       }
       await invoke("run_docker_compose", {
         subArgs: [
