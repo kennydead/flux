@@ -66,6 +66,21 @@ export default function RunningScreen({ onBack }: Props) {
     };
   }, []);
 
+  // Cmd+R / Ctrl+R / F5 reload the dashboard frame when the key lands on the Flux window itself
+  // (the dashboard handles the keys itself while it has focus). Also the way out of a frame that
+  // navigated somewhere it cannot show.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isReload = e.key === "F5" || ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "r");
+      if (!isReload) return;
+      e.preventDefault();
+      setLoaded(false);
+      setFrameNonce((n) => n + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Poll farm health so a dead dashboard shows a message instead of a black window
   useEffect(() => {
     const timer = setInterval(async () => {
