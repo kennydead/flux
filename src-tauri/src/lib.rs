@@ -442,11 +442,22 @@ fn farm_project() -> &'static str {
     }
 }
 
+/// Containers of the old-name farm: those with its compose label (stack, agents, previews) AND
+/// those the old backend started without one that mount its volumes — the `farm-auth` login
+/// container and plan / Vibe sessions (they hold the Claude login volume open during the copy).
 fn legacy_containers() -> Vec<String> {
-    docker_out(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={LEGACY_PROJECT}")])
+    let mut ids: Vec<String> = docker_out(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={LEGACY_PROJECT}")])
         .split_whitespace()
         .map(String::from)
-        .collect()
+        .collect();
+    for v in ["claude-home", "demo-repos", "dashboard-db-data"] {
+        for id in docker_out(&["ps", "-aq", "--filter", &format!("volume={LEGACY_PROJECT}_{v}")]).split_whitespace() {
+            if !ids.iter().any(|x| x == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
 }
 
 /// Stop the old-name stack gracefully (volumes kept) plus any agent/preview container its backend
