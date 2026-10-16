@@ -10,6 +10,10 @@ mod pull;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
+/// The farm's compose project. Farms installed before 2026-10-16 ran as `claudeagentfarm`; Flux moves
+/// them to `agentfarm` once (migrate_farm_names) before starting the farm under the new name.
+const FARM_PROJECT: &str = "agentfarm";
+const LEGACY_PROJECT: &str = "claudeagentfarm";
 
 fn agent_image() -> String {
     format!("{}/agent:{}", IMAGE_REGISTRY, farm_channel())
@@ -412,8 +416,138 @@ async fn check_update_safety() -> UpdateSafety {
 /// True when a running dashboard container runs an older image than the local :latest tag —
 /// an update was downloaded but not installed yet (e.g. deferred while the farm was busy, then
 /// Flux restarted). Stateless, so a deferred update survives a Flux restart.
+fn docker_ok(args: &[&str]) -> bool {
+    docker_command().args(args).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn docker_out(args: &[&str]) -> String {
+    docker_command()
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The project of the farm that is installed right now (its network exists): `agentfarm`, or
+/// `claudeagentfarm` while an old stack still runs un-migrated (e.g. the update was deferred).
+fn farm_project() -> &'static str {
+    if docker_ok(&["network", "inspect", &format!("{FARM_PROJECT}_default")]) {
+        FARM_PROJECT
+    } else if docker_ok(&["network", "inspect", &format!("{LEGACY_PROJECT}_default")]) {
+        LEGACY_PROJECT
+    } else {
+        FARM_PROJECT
+    }
+}
+
+fn legacy_containers() -> Vec<String> {
+    docker_out(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={LEGACY_PROJECT}")])
+        .split_whitespace()
+        .map(String::from)
+        .collect()
+}
+
+/// Stop the old-name stack gracefully (volumes kept) plus any agent/preview container its backend
+/// started with the old project label. No-op when nothing runs under the old name.
+fn legacy_down(compose_file: &str) {
+    if legacy_containers().is_empty() {
+        return;
+    }
+    let _ = docker_command()
+        .args(["compose", "-p", LEGACY_PROJECT, "-f", compose_file, "down", "--remove-orphans"])
+        .current_dir(farm_dir())
+        .output();
+    let left = legacy_containers();
+    if !left.is_empty() {
+        let _ = docker_command().arg("stop").arg("-t").arg("20").args(&left).output();
+        let _ = docker_command().arg("rm").arg("-f").args(&left).output();
+    }
+}
+
+/// Does starting the farm under the new name first need the one-time migration?
+fn farm_needs_migration_blocking() -> bool {
+    !legacy_containers().is_empty()
+        || (docker_ok(&["volume", "inspect", &format!("{LEGACY_PROJECT}_dashboard-db-data")])
+            && !docker_ok(&["volume", "inspect", &format!("{FARM_PROJECT}_dashboard-db-data")]))
+}
+
+/// One-time move claudeagentfarm → agentfarm (2026-10-16), same steps as the farm repo's
+/// scripts/migrate-to-agentfarm.sh: stop the old stack, copy the DATA volumes (database, Claude login,
+/// demo repos) into agentfarm_* and verify the file counts, then drop the old scratch volumes, network
+/// and image tags. The old data volumes stay as a backup (the dashboard's Storage page offers to
+/// remove them). On any copy failure the new volumes are removed and the old data is untouched.
+fn migrate_farm_names_blocking() -> Result<bool, String> {
+    let compose_file = farm_dir().join("docker-compose.yml").to_string_lossy().into_owned();
+    legacy_down(&compose_file);
+    let old_db = format!("{LEGACY_PROJECT}_dashboard-db-data");
+    let new_db = format!("{FARM_PROJECT}_dashboard-db-data");
+    if !docker_ok(&["volume", "inspect", &old_db]) || docker_ok(&["volume", "inspect", &new_db]) {
+        return Ok(false);
+    }
+    let mut created: Vec<String> = Vec::new();
+    let undo = |created: &Vec<String>| {
+        for v in created {
+            let _ = docker_command().args(["volume", "rm", v]).output();
+        }
+    };
+    for v in ["dashboard-db-data", "claude-home", "demo-repos"] {
+        let old = format!("{LEGACY_PROJECT}_{v}");
+        let new = format!("{FARM_PROJECT}_{v}");
+        if !docker_ok(&["volume", "inspect", &old]) {
+            continue;
+        }
+        let project_label = format!("com.docker.compose.project={FARM_PROJECT}");
+        let volume_label = format!("com.docker.compose.volume={v}");
+        if !docker_ok(&["volume", "create", "--label", &project_label, "--label", &volume_label, &new]) {
+            undo(&created);
+            return Err(format!("Could not create the volume {new}. Your farm data is untouched."));
+        }
+        created.push(new.clone());
+        let copied = docker_ok(&[
+            "run", "--rm", "-v", &format!("{old}:/from:ro"), "-v", &format!("{new}:/to"),
+            "postgres:16-alpine", "sh", "-c",
+            "cp -a /from/. /to/ && [ \"$(find /from | wc -l)\" = \"$(find /to | wc -l)\" ]",
+        ]);
+        if !copied {
+            undo(&created);
+            return Err(format!(
+                "Moving the farm data to its new name failed ({v}). Your data is untouched; please try again or report this."
+            ));
+        }
+    }
+    for name in docker_out(&["volume", "ls", "-q", "--filter", &format!("name=^{LEGACY_PROJECT}_")]).lines() {
+        if name.ends_with("-workspace") || name.ends_with("_dashboard-frontend-modules") {
+            let _ = docker_command().args(["volume", "rm", name]).output();
+        }
+    }
+    let _ = docker_command().args(["network", "rm", &format!("{LEGACY_PROJECT}_default")]).output();
+    for img in docker_out(&["images", "--format", "{{.Repository}}:{{.Tag}}"]).lines() {
+        if img.starts_with(&format!("{LEGACY_PROJECT}-")) {
+            let _ = docker_command().args(["rmi", img]).output();
+        }
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+async fn farm_needs_migration() -> bool {
+    tauri::async_runtime::spawn_blocking(farm_needs_migration_blocking).await.unwrap_or(false)
+}
+
+#[tauri::command]
+async fn migrate_farm_names() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(migrate_farm_names_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn farm_update_pending_blocking() -> bool {
-    for svc in ["dashboard-backend", "dashboard-frontend"] {
+    for (proj, svc) in [FARM_PROJECT, LEGACY_PROJECT]
+        .into_iter()
+        .flat_map(|p| ["dashboard-backend", "dashboard-frontend"].map(move |s| (p, s)))
+    {
         let out = |args: &[&str]| -> String {
             docker_command()
                 .args(args)
@@ -423,7 +557,7 @@ fn farm_update_pending_blocking() -> bool {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_default()
         };
-        let project = "label=com.docker.compose.project=claudeagentfarm".to_string();
+        let project = format!("label=com.docker.compose.project={proj}");
         let service = format!("label=com.docker.compose.service={svc}");
         let ids = out(&["ps", "-q", "--filter", &project, "--filter", &service]);
         let Some(cid) = ids.lines().next().map(str::trim).filter(|s| !s.is_empty()) else { continue };
@@ -446,6 +580,7 @@ async fn farm_update_pending() -> bool {
 /// Recreate the dashboard stack so freshly pulled images take effect. --force-recreate: a plain
 /// `up -d` does not reliably replace a running container after its image changed.
 fn recreate_dashboard() -> Result<(), String> {
+    migrate_farm_names_blocking()?;
     let farm = farm_dir();
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     let out = docker_command()
@@ -501,6 +636,7 @@ async fn stop_farm() -> Result<(), String> {
         let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
             .output();
+        legacy_down(&compose_file);
     }).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -515,6 +651,7 @@ async fn soft_reset() -> Result<(), String> {
         let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
             .output();
+        legacy_down(&compose_file);
     }).await;
 
     // Remove farm directory (clears setup_complete flag and old scripts)
@@ -533,6 +670,7 @@ async fn reset_setup() -> Result<(), String> {
         let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
             .output();
+        legacy_down(&compose_file);
     }).await;
 
     // Remove license key
@@ -541,7 +679,7 @@ async fn reset_setup() -> Result<(), String> {
     // Remove Claude auth volume
     let _ = tauri::async_runtime::spawn_blocking(move || {
         let _ = docker_command()
-            .args(["volume", "rm", "-f", "claudeagentfarm_claude-home"])
+            .args(["volume", "rm", "-f", &format!("{FARM_PROJECT}_claude-home"), &format!("{LEGACY_PROJECT}_claude-home")])
             .output();
     }).await;
 
@@ -556,6 +694,7 @@ async fn confirm_quit(app: AppHandle) {
         let _ = docker_command()
             .args(["compose", "-f", &compose_file, "down"])
             .output();
+        legacy_down(&compose_file);
     }).await;
     app.exit(0);
 }
@@ -727,12 +866,13 @@ fn open_discuss_terminal(farm: &std::path::Path, project_id: &str) {
     let workspace = farm.join("planning-workspace");
     let _ = std::fs::create_dir_all(&workspace);
 
+    let project = farm_project();
     let mut docker_args: Vec<String> = vec![
         "docker".into(), "run".into(), "-it".into(), "--rm".into(),
         "--platform".into(), "linux/amd64".into(),
-        "--network".into(), "claudeagentfarm_default".into(),
+        "--network".into(), format!("{project}_default"),
         "-e".into(), "DASHBOARD_URL=http://dashboard-backend:8090".into(),
-        "-v".into(), "claudeagentfarm_claude-home:/home/agent".into(),
+        "-v".into(), format!("{project}_claude-home:/home/agent"),
         "-v".into(), format!("{}:/planning-workspace", workspace.to_string_lossy()),
         "-v".into(), format!("{}:/app/config.yml", farm.join("config.yml").to_string_lossy()),
     ];
@@ -1110,6 +1250,8 @@ pub fn run() {
             check_update_safety,
             farm_update_pending,
             apply_farm_update,
+            farm_needs_migration,
+            migrate_farm_names,
             run_docker_compose,
             run_detached,
             start_host_bridge,

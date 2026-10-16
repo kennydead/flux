@@ -12,7 +12,7 @@ echo "If it completes immediately, you are already authenticated."
 echo ""
 
 docker run --rm -i --platform linux/amd64 --entrypoint="" \
-  -v claudeagentfarm_claude-home:/home/agent \
+  -v agentfarm_claude-home:/home/agent \
   ghcr.io/kennydead/claude-agent-farm/agent:latest \
   claude auth login
 
