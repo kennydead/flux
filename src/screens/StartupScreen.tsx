@@ -121,8 +121,13 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       // Point the agent aliases at the new image only now that it installs: retagging before a
       // deferral made the still-running old backend start agents from the new image (audit).
       if (needsMigration) {
-        set("start", "active", "moving the farm data to its new name (one time)");
+        // One-time, can take a minute or two: its own visible step, not a note on "Starting services".
+        setSteps((prev) => prev.some((x) => x.id === "migrate") ? prev : prev.flatMap((x) => x.id === "start"
+          ? [{ id: "migrate", label: "Moving your farm data to its new name", state: "active" as const,
+               note: "one time, keeps a backup — about a minute" }, x]
+          : [x]));
         await invoke("migrate_farm_names");
+        set("migrate", "done", "done — the old copy stays as a backup");
       }
       for (const tag of AGENT_TAGS) {
         await invoke("run_command", { program: "docker", args: ["tag", agentImage, tag] });
