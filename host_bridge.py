@@ -21,16 +21,27 @@ except OSError:
     IS_WSL = False
 
 
+def _farm_project() -> str:
+    """The farm's compose project: `agentfarm`, or `claudeagentfarm` for a stack started before the
+    2026-10-16 rename that has not been migrated yet (its network is the one that exists)."""
+    for name in ("agentfarm", "claudeagentfarm"):
+        if subprocess.run(["docker", "network", "inspect", f"{name}_default"],
+                          capture_output=True).returncode == 0:
+            return name
+    return "agentfarm"
+
+
 def _open_terminal(project_dir: str, project_id: str) -> None:
     workspace = os.path.join(project_dir, "planning-workspace")
     os.makedirs(workspace, exist_ok=True)
 
     # claude-home volume carries the Claude Code auth credentials
+    farm = _farm_project()
     docker_args = [
         "docker", "run", "-it", "--rm", "--platform", "linux/amd64",
-        "--network", "claudeagentfarm_default",
+        "--network", f"{farm}_default",
         "-e", "DASHBOARD_URL=http://dashboard-backend:8090",
-        "-v", "claudeagentfarm_claude-home:/home/agent",
+        "-v", f"{farm}_claude-home:/home/agent",
         "-v", f"{workspace}:/planning-workspace",
         IMAGE, "python", "-m", "agent.discuss",
     ]

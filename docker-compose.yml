@@ -1,4 +1,4 @@
-name: claudeagentfarm
+name: agentfarm
 
 services:
   dashboard-db:
