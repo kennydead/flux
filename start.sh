@@ -12,10 +12,10 @@ docker pull ghcr.io/kennydead/claude-agent-farm/dashboard-backend:latest
 docker pull ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:latest
 
 echo "Tagging images..."
-docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest claudeagentfarm-coder
-docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest claudeagentfarm-reviewer
-docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest claudeagentfarm-planner
-docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest claudeagentfarm-auditor
+docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest agentfarm-coder
+docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest agentfarm-reviewer
+docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest agentfarm-planner
+docker tag ghcr.io/kennydead/claude-agent-farm/agent:latest agentfarm-auditor
 
 docker compose up -d dashboard-db dashboard-backend dashboard-frontend
 

@@ -1,4 +1,4 @@
-name: claudeagentfarm
+name: agentfarm
 
 services:
   dashboard-db:
@@ -17,10 +17,14 @@ services:
     restart: unless-stopped
 
   dashboard-backend:
-    image: ghcr.io/kennydead/claude-agent-farm/dashboard-backend:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-backend:${FARM_CHANNEL:-latest}
+    # Linux Docker Engine does not provide host.docker.internal (Docker Desktop does); the backend
+    # reaches published preview ports through it (routers/specs.py _preview_answers). Harmless elsewhere.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8090:8090"
+      # The API is only for this computer (Flux, the dashboard proxies it): never on the network.
+      - "127.0.0.1:8090:8090"
     env_file:
       - path: .env
         required: false
@@ -31,6 +35,10 @@ services:
       COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR:-${PWD:-}}
       LICENSE_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/validate-license
       DIAGNOSTICS_SERVER_URL: https://oywppqdqfcypawrthfox.supabase.co/functions/v1/receive-diagnostic
+      # Master switch for the LiteLLM gateway. Default OFF for now — the farm hard-locks to the
+      # user's own Claude subscription (connect it in Settings) and can't bill our gateway, with
+      # no .env setup needed. Set FARM_GATEWAY_ENABLED=true only once the gateway product is live.
+      FARM_GATEWAY_ENABLED: ${FARM_GATEWAY_ENABLED:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.yml:/farm/config.yml:ro
@@ -45,17 +53,17 @@ services:
     restart: unless-stopped
 
   dashboard-frontend:
-    image: ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/dashboard-frontend:${FARM_CHANNEL:-latest}
     ports:
-      - "5174:5174"
+      # This computer only, unless Settings → "Access from other devices" sets FARM_LISTEN_ADDRESS
+      # (in .env) to 0.0.0.0 — which also requires the dashboard login.
+      - "${FARM_LISTEN_ADDRESS:-127.0.0.1}:5174:5174"
     depends_on:
       - dashboard-backend
     restart: unless-stopped
 
   coder:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     env_file: .env
     environment:
       AGENT_MODE: coder
@@ -70,8 +78,7 @@ services:
     restart: unless-stopped
 
   reviewer:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     env_file: .env
     environment:
       AGENT_MODE: reviewer
@@ -87,8 +94,7 @@ services:
     restart: unless-stopped
 
   planner:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     env_file: .env
     environment:
       AGENT_MODE: planner
@@ -102,8 +108,7 @@ services:
     restart: unless-stopped
 
   auditor:
-    image: ghcr.io/kennydead/claude-agent-farm/agent:latest
-    platform: linux/amd64
+    image: ghcr.io/kennydead/claude-agent-farm/agent:${FARM_CHANNEL:-latest}
     env_file: .env
     environment:
       AGENT_MODE: auditor

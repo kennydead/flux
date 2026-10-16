@@ -29,7 +29,7 @@ const INITIAL_STEPS: Step[] = [
 ];
 
 
-const AGENT_TAGS = ["claudeagentfarm-coder", "claudeagentfarm-reviewer", "claudeagentfarm-planner", "claudeagentfarm-auditor"];
+const AGENT_TAGS = ["agentfarm-coder", "agentfarm-reviewer", "agentfarm-planner", "agentfarm-auditor"];
 
 export default function StartupScreen({ onReady, onResetSetup }: Props) {
   const [steps, setSteps] = useState<Step[]>(INITIAL_STEPS);
@@ -97,7 +97,10 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       // installed), FORCE-RECREATE: a plain `up -d` does not reliably replace a running container
       // after its image changed. Recreating only then avoids churn on an unchanged launch.
       set("start", "active");
-      const pending = anyUpdated
+      // A farm installed before the agentfarm rename still runs as "claudeagentfarm": starting it
+      // under the new name first moves its data (stops the old stack), so it counts as an update.
+      const needsMigration = await invoke<boolean>("farm_needs_migration").catch(() => false);
+      const pending = anyUpdated || needsMigration
         || (farmWasUp && await invoke<boolean>("farm_update_pending").catch(() => false));
       if (farmWasUp && pending) {
         const safety = await invoke<UpdateSafety>("check_update_safety")
@@ -117,6 +120,10 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       }
       // Point the agent aliases at the new image only now that it installs: retagging before a
       // deferral made the still-running old backend start agents from the new image (audit).
+      if (needsMigration) {
+        set("start", "active", "moving the farm data to its new name (one time)");
+        await invoke("migrate_farm_names");
+      }
       for (const tag of AGENT_TAGS) {
         await invoke("run_command", { program: "docker", args: ["tag", agentImage, tag] });
       }
