@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -29,6 +30,14 @@ export default function RunningScreen({ onBack }: Props) {
         // The webview ignores the frame's target="_blank" links / window.open: the dashboard hands
         // external links here and they open in the default browser (http/https only).
         if (typeof d.url === "string" && /^https?:\/\//i.test(d.url)) openUrl(d.url).catch(() => {});
+        return;
+      }
+      if (d.type === "app-info") {
+        // Settings → System → Versions in the dashboard: which Flux this is (owner 2026-10-21 — reading
+        // it meant quitting the app to see the home screen).
+        getVersion()
+          .then((version) => frameRef.current?.contentWindow?.postMessage({ source: "flux", type: "app-info", version }, "http://localhost:5174"))
+          .catch(() => {});
         return;
       }
       if (d.type === "host-info") {
