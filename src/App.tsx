@@ -7,6 +7,7 @@ import HomeScreen from "./screens/HomeScreen";
 import StartupScreen from "./screens/StartupScreen";
 import RunningScreen from "./screens/RunningScreen";
 import { PullProgressBar, usePullProgress } from "./components/PullProgress";
+import UpdateDialog from "./components/UpdateDialog";
 import { reasonsText, takeUpdateFarmOnLaunch, type SafetyReason, type UpdateSafety } from "./farmUpdate";
 import "./App.css";
 
@@ -42,6 +43,9 @@ export default function App() {
   const [updateError, setUpdateError] = useState("");
   const [noticeHidden, setNoticeHidden] = useState(false);
   const [dashboardNonce, setDashboardNonce] = useState(0);
+  // Tray → "Check for Updates…", and a Flux app update installing in the background (dashboard / tray).
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [appUpdating, setAppUpdating] = useState<string | null>(null);
   const pullProgress = usePullProgress();
 
   function deferUpdate(safety: UpdateSafety) {
@@ -97,6 +101,17 @@ export default function App() {
   }, [updatePending]);
 
   useEffect(() => {
+    const a = listen("update-check-requested", () => setShowUpdateDialog(true));
+    const b = listen<string>("flux-app-updating", (e) => { setNoticeHidden(false); setAppUpdating(e.payload || "new version"); });
+    const c = listen<string>("flux-app-update-failed", (e) => {
+      setAppUpdating(null);
+      setNoticeHidden(false);
+      setUpdateError(`Flux could not update itself: ${e.payload}`);
+    });
+    return () => { [a, b, c].forEach((u) => u.then((f) => f())); };
+  }, []);
+
+  useEffect(() => {
     const unlisten = listen("reset-requested", () => setShowResetConfirm(true));
     return () => { unlisten.then((f) => f()); };
   }, []);
@@ -146,7 +161,10 @@ export default function App() {
   useEffect(() => {
     if (import.meta.env.DEV) { setIsConfigured(true); setState("home"); return; }
     async function init() {
-      const afterFluxUpdate = takeUpdateFarmOnLaunch();
+      // Set by the home screen's update (localStorage) or by an update installed in the background
+      // from the dashboard / tray (a flag file Rust writes before restarting).
+      const afterFluxUpdate = takeUpdateFarmOnLaunch()
+        || await invoke<boolean>("take_after_update_flag").catch(() => false);
       if (await isFarmRunning()) {
         // A running farm means setup was done: without this, stopping the farm sent "Get started"
         // back through license + Docker setup (the key was still saved).
@@ -198,13 +216,24 @@ export default function App() {
           <PullProgressBar state={pullProgress} />
         </div>
       )}
-      {state !== "startup" && !pullProgress.progress && !noticeHidden && (installingUpdate || updatePending || updateError) && (
+      {appUpdating && (
+        <div className="farm-update-notice">
+          <span>Updating Flux to {appUpdating} — it restarts in a moment. The farm keeps running.</span>
+        </div>
+      )}
+      {showUpdateDialog && (
+        <UpdateDialog
+          onClose={() => setShowUpdateDialog(false)}
+          onFarmUpdated={() => setTimeout(() => setDashboardNonce((n) => n + 1), 1500)}
+        />
+      )}
+      {!appUpdating && state !== "startup" && !pullProgress.progress && !noticeHidden && (installingUpdate || updatePending || updateError) && (
         <div className="farm-update-notice">
           <span>
             {installingUpdate
               ? "Installing the farm update — the dashboard reloads in a moment…"
               : updateError
-                ? `The farm update could not be installed: ${updateError.slice(0, 200)}`
+                ? (updateError.startsWith("Flux could not") ? updateError.slice(0, 240) : `The farm update could not be installed: ${updateError.slice(0, 200)}`)
                 : `Farm update downloaded — it installs when the farm is idle${waitingFor.length ? ` (waiting for: ${reasonsText(waitingFor)})` : ""}.`}
           </span>
           {!installingUpdate && (

@@ -102,7 +102,9 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       const needsMigration = await invoke<boolean>("farm_needs_migration").catch(() => false);
       const pending = anyUpdated || needsMigration
         || (farmWasUp && await invoke<boolean>("farm_update_pending").catch(() => false));
-      if (farmWasUp && pending) {
+      // The user chose "Update now anyway" before Flux restarted into its new version: no idle wait.
+      const updateNow = await invoke<boolean>("take_update_now_flag").catch(() => false);
+      if (farmWasUp && pending && !updateNow) {
         const safety = await invoke<UpdateSafety>("check_update_safety")
           .catch(() => ({ safe: false, known: false, reasons: [] } as UpdateSafety));
         if (!safety.safe) {
