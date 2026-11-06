@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 mod docker_env;
 mod pull;
+mod registry;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";

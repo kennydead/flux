@@ -3,8 +3,9 @@
 //! Pulls go through the Docker Engine API (bollard), not the `docker pull` CLI:
 //!  - the API streams per-layer byte progress (`progressDetail.current/total`); the CLI's non-TTY
 //!    output only has status lines, no bytes;
-//!  - the API talks to the daemon socket / named pipe directly and sends no registry credentials
-//!    (the images are public), so no credential helper ever runs — no macOS privacy prompt;
+//!  - the API talks to the daemon socket / named pipe directly; it never reads docker's own config, so
+//!    no credential helper ever runs (no macOS privacy prompt). The images are going private: the
+//!    license's read-only login (registry.rs) is passed with each pull instead;
 //!  - it works the same on macOS (unix socket) and Windows (named pipe).
 //! The daemon only reports a layer's size once that layer starts downloading (3 at a time), so
 //! the overall total comes from the registry manifests (ghcr anonymous token, a few small GETs)
@@ -12,6 +13,7 @@
 //! shows its step text instead. If the Engine API can't be reached at all, the pull falls back to
 //! the CLI (with the isolated docker config) — the old behaviour, without a bar.
 
+use bollard::auth::DockerCredentials;
 use bollard::query_parameters::CreateImageOptionsBuilder;
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures_util::StreamExt;
@@ -67,13 +69,16 @@ fn short_name(image: &str) -> String {
     name.rsplit('/').next().unwrap_or(&name).to_string()
 }
 
-/// Layer sizes from ghcr.io (anonymous pull token — the farm images are public). Blocking.
-fn fetch_remote(image: &str, os: &str, arch: &str) -> Option<RemoteImage> {
+/// Layer sizes from ghcr.io (a pull token with the license's login, else anonymous). Blocking.
+fn fetch_remote(image: &str, os: &str, arch: &str, login: Option<&crate::registry::Login>) -> Option<RemoteImage> {
     let (name, tag) = split_ref(image);
     let repo = name.strip_prefix("ghcr.io/")?;
     let timeout = Duration::from_secs(8);
-    let token: serde_json::Value = ureq::get(&format!("https://ghcr.io/token?scope=repository:{repo}:pull"))
-        .timeout(timeout)
+    let mut req = ureq::get(&format!("https://ghcr.io/token?scope=repository:{repo}:pull")).timeout(timeout);
+    if let Some(l) = login {
+        req = req.set("Authorization", &crate::registry::basic_auth(l));
+    }
+    let token: serde_json::Value = req
         .call()
         .ok()?
         .into_json()
@@ -248,11 +253,18 @@ async fn connect() -> Result<Docker, String> {
 /// One image through the Engine API. Returns whether the local image changed.
 const PULL_IDLE_SECS: u64 = 180;
 
-async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker) -> Result<bool, String> {
+async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker,
+                  login: Option<&crate::registry::Login>) -> Result<bool, String> {
     let before = docker.inspect_image(image).await.ok().and_then(|i| i.id);
     let (name, tag) = split_ref(image);
     let opts = CreateImageOptionsBuilder::default().from_image(&name).tag(&tag).build();
-    let mut stream = docker.create_image(Some(opts), None, None);
+    let creds = login.filter(|_| name.starts_with("ghcr.io/")).map(|l| DockerCredentials {
+        username: Some(l.username.clone()),
+        password: Some(l.token.clone()),
+        serveraddress: Some(crate::registry::HOST.to_string()),
+        ..Default::default()
+    });
+    let mut stream = docker.create_image(Some(opts), None, creds);
     let short = short_name(image);
     let mut newer = false;
     loop {
@@ -303,6 +315,8 @@ fn pull_cli(image: &str) -> Result<bool, String> {
 /// Pull `images` in order, emitting one overall progress stream. Returns true when any image
 /// changed locally.
 pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<bool, String> {
+    // The license's read-only login (private images); None → anonymous, as before.
+    let login = tauri::async_runtime::spawn_blocking(crate::registry::ensure).await.ok().flatten();
     let docker = match connect().await {
         Ok(d) => Some(d),
         Err(e) => {
@@ -320,7 +334,8 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
             let arch = v.arch.unwrap_or_else(|| "amd64".into());
             for (i, img) in images.iter().enumerate() {
                 let (img2, os2, arch2) = (img.clone(), os.clone(), arch.clone());
-                let remote = tauri::async_runtime::spawn_blocking(move || fetch_remote(&img2, &os2, &arch2))
+                let login2 = login.clone();
+                let remote = tauri::async_runtime::spawn_blocking(move || fetch_remote(&img2, &os2, &arch2, login2.as_ref()))
                     .await
                     .ok()
                     .flatten();
@@ -355,7 +370,7 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
         tracker.start_image(i, remotes[i].as_ref());
         tracker.emit("pulling", &short, true);
         let api_result = match &docker {
-            Some(d) => Some(pull_api(d, img, &mut tracker).await),
+            Some(d) => Some(pull_api(d, img, &mut tracker, login.as_ref()).await),
             None => None,
         };
         let updated = match api_result {
@@ -430,6 +445,22 @@ mod tests {
         assert!(!t.current_totals().2);
     }
 
+    /// Live, read-only: the saved license key gets a login from the license server, and that login
+    /// reads the agent image's manifest on ghcr.io. No docker login, nothing written.
+    #[test]
+    #[ignore]
+    fn the_license_login_reads_the_manifests() {
+        let key = std::fs::read_to_string(crate::farm_dir().join("logs").join("license_key.txt")).expect("saved key");
+        let res = ureq::post(crate::LICENSE_ENDPOINT)
+            .send_json(serde_json::json!({ "key": key.trim() }))
+            .expect("license server");
+        let login = crate::registry::from_answer(&res.into_json().expect("json")).expect("a login in the answer");
+        eprintln!("login for {}", login.username);
+        let r = fetch_remote("ghcr.io/kennydead/claude-agent-farm/agent:latest", "linux", "arm64", Some(&login))
+            .expect("manifest read with the login");
+        eprintln!("agent:latest layers {} total {} MB", r.layers.len(), r.layers.iter().map(|l| l.1).sum::<u64>() / 1_000_000);
+    }
+
     /// Read-only check against the local Docker daemon: connect + negotiate + inspect.
     #[test]
     #[ignore]
@@ -439,7 +470,7 @@ mod tests {
             let v = d.version().await.expect("version");
             eprintln!("daemon {:?}/{:?} api {:?}", v.os, v.arch, v.api_version);
             let r = tauri::async_runtime::spawn_blocking(|| {
-                fetch_remote("ghcr.io/kennydead/claude-agent-farm/agent:latest", "linux", "arm64")
+                fetch_remote("ghcr.io/kennydead/claude-agent-farm/agent:latest", "linux", "arm64", None)
             }).await.unwrap().expect("manifest");
             eprintln!("agent:latest layers {} total {} MB", r.layers.len(), r.layers.iter().map(|l| l.1).sum::<u64>() / 1_000_000);
         });
