@@ -52,7 +52,7 @@ export default function UpdateDialog({ onClose, onFarmUpdated }: { onClose: () =
         // Flux restarts on its own in a moment; the notice in App.tsx takes over.
         const started = await invoke<boolean>("install_app_update", { now });
         setMessage(started
-          ? `Installing Flux ${status.app_update} — Flux restarts in a moment. The farm keeps running.`
+          ? "Updating Flux… this takes about a minute. Agents keep working."
           : `Flux is already up to date (version ${status.flux_version}).`);
         setPhase("done");
         return;
@@ -73,8 +73,8 @@ export default function UpdateDialog({ onClose, onFarmUpdated }: { onClose: () =
 
   const unsafe = !!safety && !safety.safe;
   const what = status?.app_update
-    ? `Flux ${status.app_update} is available (you have ${status.flux_version}).`
-    : "A new version of the farm is available.";
+    ? `Flux ${status.app_update} is ready.`
+    : "A new version of Flux is ready.";
 
   return (
     <div className="reset-overlay">
@@ -87,15 +87,14 @@ export default function UpdateDialog({ onClose, onFarmUpdated }: { onClose: () =
           <p>Flux is up to date (version {status.flux_version}).{status.images_update === null ? " The farm's version couldn't be checked right now." : ""}</p>
         )}
         {phase === "ready" && status?.update_available && !farmUp && !status.app_update && (
-          <p>A new version of the farm is available. It installs when you start the farm.</p>
+          <p>A new version of Flux is ready. It installs when you start the farm.</p>
         )}
         {phase === "ready" && status?.update_available && (farmUp || status.app_update) && (
           <>
             <p>{what}</p>
             {unsafe && (
               <p>
-                The farm is busy right now ({reasonsText(safety!.reasons)}). Updating when it's idle interrupts nothing;
-                agents keep working either way.
+                Updating right now would interrupt: {reasonsText(safety!.reasons)}. Agents keep working either way.
               </p>
             )}
           </>

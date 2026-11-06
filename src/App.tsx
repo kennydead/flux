@@ -225,7 +225,7 @@ export default function App() {
       )}
       {appUpdating && (
         <div className="farm-update-notice">
-          <span>Updating Flux to {appUpdating} — it restarts in a moment. The farm keeps running.</span>
+          <span>Updating Flux… this takes about a minute. Agents keep working.</span>
         </div>
       )}
       {showUpdateDialog && (
