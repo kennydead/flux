@@ -75,6 +75,26 @@ pub async fn status(app: &AppHandle, refresh: bool) -> Status {
     s
 }
 
+/// Forget the cached answer (after an update installed: it must not keep saying "available").
+pub fn clear_cache() {
+    if let Ok(mut g) = CACHE.lock() {
+        *g = None;
+    }
+}
+
+fn write_flags(now: bool) {
+    let _ = std::fs::create_dir_all(crate::farm_dir().join("logs"));
+    let _ = std::fs::write(flag_path(AFTER_FLAG), "1");
+    if now {
+        let _ = std::fs::write(flag_path(NOW_FLAG), "1");
+    }
+}
+
+fn clear_flags() {
+    let _ = std::fs::remove_file(flag_path(AFTER_FLAG));
+    let _ = std::fs::remove_file(flag_path(NOW_FLAG));
+}
+
 fn flag_path(name: &str) -> std::path::PathBuf {
     crate::farm_dir().join("logs").join(name)
 }
@@ -97,34 +117,47 @@ pub fn take_now_flag() -> bool {
 /// The work runs in the background: the caller's reply goes out before Flux restarts.
 pub async fn start_app_update(app: &AppHandle, now: bool) -> Result<bool, String> {
     if APP_UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
+        if now {
+            write_flags(true);   // a second request asked for "now": remember it
+        }
         return Ok(true);   // already installing
     }
-    let update = match app.updater().map_err(|e| e.to_string())?.check().await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
+            return Err(e.to_string());
+        }
+    };
+    let update = match tokio::time::timeout(Duration::from_secs(20), updater.check()).await {
+        Ok(Ok(Some(u))) => u,
+        Ok(Ok(None)) => {
             APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
             return Ok(false);
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
             return Err(format!("Could not check for the Flux update: {e}"));
+        }
+        Err(_) => {
+            APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
+            return Err("Checking for the Flux update timed out".to_string());
         }
     };
     let _ = app.emit(APP_UPDATING_EVENT, update.version.clone());
     let app2 = app.clone();
+    // The flags go down BEFORE the install: on Windows the updater starts the installer and exits
+    // the process itself (download_and_install never returns), and the installer relaunches Flux.
+    write_flags(now);
     tauri::async_runtime::spawn(async move {
         match update.download_and_install(|_, _| {}, || {}).await {
             Ok(()) => {
-                let _ = std::fs::create_dir_all(crate::farm_dir().join("logs"));
-                let _ = std::fs::write(flag_path(AFTER_FLAG), "1");
-                if now {
-                    let _ = std::fs::write(flag_path(NOW_FLAG), "1");
-                }
-                // Give the bridge reply / the window notice a moment, then restart into the new app.
+                // macOS: give the bridge reply / the window notice a moment, then restart into the new app.
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 app2.restart();
             }
             Err(e) => {
+                clear_flags();
                 APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
                 let _ = app2.emit(APP_UPDATE_FAILED_EVENT, e.to_string());
                 eprintln!("[flux] app update failed: {e}");

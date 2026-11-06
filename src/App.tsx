@@ -163,8 +163,8 @@ export default function App() {
     async function init() {
       // Set by the home screen's update (localStorage) or by an update installed in the background
       // from the dashboard / tray (a flag file Rust writes before restarting).
-      const afterFluxUpdate = takeUpdateFarmOnLaunch()
-        || await invoke<boolean>("take_after_update_flag").catch(() => false);
+      const fileFlag = await invoke<boolean>("take_after_update_flag").catch(() => false);
+      const afterFluxUpdate = takeUpdateFarmOnLaunch() || fileFlag;
       if (await isFarmRunning()) {
         // A running farm means setup was done: without this, stopping the farm sent "Get started"
         // back through license + Docker setup (the key was still saved).

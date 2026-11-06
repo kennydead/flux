@@ -4,7 +4,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import Button from "../components/Button";
 import appIcon from "../assets/app-icon.png";
-import { markUpdateFarmOnLaunch } from "../farmUpdate";
+import { markUpdateFarmOnLaunch, takeUpdateFarmOnLaunch } from "../farmUpdate";
 import "./HomeScreen.css";
 
 interface Props {
@@ -60,6 +60,9 @@ export default function HomeScreen({ onStart }: Props) {
       if (!update?.available) return;
       let downloaded = 0;
       let total = 0;
+      // Marked BEFORE installing: on Windows the installer exits Flux from inside downloadAndInstall,
+      // so nothing after it runs. The relaunched Flux updates the farm too (waiting until it is idle).
+      markUpdateFarmOnLaunch();
       await update.downloadAndInstall((event) => {
         if (event.event === "Started") total = event.data.contentLength ?? 0;
         if (event.event === "Progress") {
@@ -68,10 +71,9 @@ export default function HomeScreen({ onStart }: Props) {
         }
         if (event.event === "Finished") setDownloadProgress(100);
       });
-      // The relaunched Flux updates the farm too (waiting until the farm is idle).
-      markUpdateFarmOnLaunch();
       await relaunch();
     } catch {
+      takeUpdateFarmOnLaunch();   // the install failed: no relaunch is coming
       setDownloading(false);
     }
   }

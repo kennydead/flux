@@ -50,8 +50,10 @@ export default function UpdateDialog({ onClose, onFarmUpdated }: { onClose: () =
     try {
       if (status.app_update) {
         // Flux restarts on its own in a moment; the notice in App.tsx takes over.
-        await invoke<boolean>("install_app_update", { now });
-        setMessage(`Installing Flux ${status.app_update} — Flux restarts in a moment. The farm keeps running.`);
+        const started = await invoke<boolean>("install_app_update", { now });
+        setMessage(started
+          ? `Installing Flux ${status.app_update} — Flux restarts in a moment. The farm keeps running.`
+          : `Flux is already up to date (version ${status.flux_version}).`);
         setPhase("done");
         return;
       }

@@ -618,9 +618,11 @@ fn recreate_dashboard() -> Result<(), String> {
 /// Install a downloaded farm update (the deferred-until-idle path).
 #[tauri::command]
 async fn apply_farm_update() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(recreate_dashboard)
+    let res = tauri::async_runtime::spawn_blocking(recreate_dashboard)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    updates::clear_cache();
+    res
 }
 
 #[tauri::command]
@@ -1012,6 +1014,7 @@ fn run_farm_update(app: &AppHandle, now: bool) -> (u16, String) {
             return Ok(Some(post));
         }
         recreate_dashboard()?;
+        updates::clear_cache();
         Ok(None)
     })();
     FARM_UPDATE_RUNNING.store(false, Ordering::SeqCst);

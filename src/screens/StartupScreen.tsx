@@ -52,6 +52,9 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       return;
     }
 
+    // The user chose "Update now anyway" before Flux restarted into its new version: no idle wait.
+    // Read (and cleared) first, so a failed pull can't leave it for some much later launch.
+    const updateNow = await invoke<boolean>("take_update_now_flag").catch(() => false);
     try {
       // The agent image for the farm's channel (pull_farm_images pulls all three in Rust)
       const version = await invoke<string>("get_farm_version");
@@ -102,8 +105,6 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
       const needsMigration = await invoke<boolean>("farm_needs_migration").catch(() => false);
       const pending = anyUpdated || needsMigration
         || (farmWasUp && await invoke<boolean>("farm_update_pending").catch(() => false));
-      // The user chose "Update now anyway" before Flux restarted into its new version: no idle wait.
-      const updateNow = await invoke<boolean>("take_update_now_flag").catch(() => false);
       if (farmWasUp && pending && !updateNow) {
         const safety = await invoke<UpdateSafety>("check_update_safety")
           .catch(() => ({ safe: false, known: false, reasons: [] } as UpdateSafety));
