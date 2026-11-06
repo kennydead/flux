@@ -100,6 +100,13 @@ export default function App() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [updatePending]);
 
+  // Keep the computer awake while the farm runs (Flux setting, default on): the farm "runs" while the
+  // dashboard is shown; stopping / quitting releases it on the Rust side too.
+  useEffect(() => {
+    if (state === "loading") return;
+    invoke("farm_running_changed", { running: state === "running" }).catch(() => {});
+  }, [state]);
+
   useEffect(() => {
     const a = listen("update-check-requested", () => setShowUpdateDialog(true));
     const b = listen<string>("flux-app-updating", (e) => { setNoticeHidden(false); setAppUpdating(e.payload || "new version"); });

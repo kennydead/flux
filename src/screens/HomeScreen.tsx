@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import Button from "../components/Button";
@@ -20,6 +21,8 @@ const FEATURES = [
 
 export default function HomeScreen({ onStart }: Props) {
   const [autostart, setAutostart] = useState(false);
+  // Keep the computer awake while the farm runs (default on; the tray menu has the same switch).
+  const [keepAwake, setKeepAwake] = useState(true);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -28,7 +31,10 @@ export default function HomeScreen({ onStart }: Props) {
   useEffect(() => {
     if (!import.meta.env.DEV) {
       invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+      invoke<boolean>("get_keep_awake").then(setKeepAwake).catch(() => {});
     }
+    // The tray's checkmark changed it.
+    const unlistenAwake = listen<boolean>("keep-awake-changed", (e) => setKeepAwake(e.payload));
 
     const checkUpdate = async () => {
       try {
@@ -39,7 +45,7 @@ export default function HomeScreen({ onStart }: Props) {
 
     checkUpdate();
     const interval = setInterval(checkUpdate, 60 * 60 * 1000);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); unlistenAwake.then((f) => f()); };
   }, []);
 
   async function manualCheckUpdate() {
@@ -147,6 +153,7 @@ export default function HomeScreen({ onStart }: Props) {
 
       {/* Auto-start toggle */}
       {!import.meta.env.DEV && (
+        <>
         <label className="home-autostart">
           <input
             type="checkbox"
@@ -155,12 +162,25 @@ export default function HomeScreen({ onStart }: Props) {
           />
           Launch Flux at login
         </label>
+        <label className="home-autostart">
+          <input
+            type="checkbox"
+            checked={keepAwake}
+            onChange={(e) => {
+              const val = e.target.checked;
+              setKeepAwake(val);
+              invoke<boolean>("set_keep_awake", { enabled: val }).catch(() => setKeepAwake(!val));
+            }}
+          />
+          Keep computer awake while the farm runs
+        </label>
+        </>
       )}
 
       {/* Footer */}
       <footer className="home-footer">
         <div className="home-version-row">
-          <span className="home-version">v0.5.6</span>
+          <span className="home-version">v0.5.7</span>
           <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
             {checkingUpdate ? "Checking…" : "Check for updates"}
           </button>
