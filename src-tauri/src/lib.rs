@@ -8,6 +8,7 @@ use std::path::PathBuf;
 mod docker_env;
 mod pull;
 mod registry;
+mod updates;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
@@ -617,9 +618,11 @@ fn recreate_dashboard() -> Result<(), String> {
 /// Install a downloaded farm update (the deferred-until-idle path).
 #[tauri::command]
 async fn apply_farm_update() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(recreate_dashboard)
+    let res = tauri::async_runtime::spawn_blocking(recreate_dashboard)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    updates::clear_cache();
+    res
 }
 
 #[tauri::command]
@@ -971,7 +974,8 @@ fn busy_body(message: &str, safety: &UpdateSafety) -> String {
 /// When the farm is busy (update-safety says not safe) nothing is recreated: the reply is 409
 /// busy with the reasons, the update downloads in the background and Flux installs it when the
 /// farm is idle.
-fn run_farm_update(app: &AppHandle) -> (u16, String) {
+/// `now` (the user chose "Update now anyway"): install even though the farm is busy.
+fn run_farm_update(app: &AppHandle, now: bool) -> (u16, String) {
     use std::sync::atomic::Ordering;
     if FARM_UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         let msg = "A farm update is already in progress.";
@@ -979,7 +983,7 @@ fn run_farm_update(app: &AppHandle) -> (u16, String) {
     }
 
     let pre = update_safety();
-    if !pre.safe {
+    if !pre.safe && !now {
         let msg = format!(
             "The farm is busy (waiting for: {}). The update downloads now and installs automatically when the farm is idle.",
             safety_reasons_text(&pre)
@@ -1003,13 +1007,14 @@ fn run_farm_update(app: &AppHandle) -> (u16, String) {
         let updated = pull_farm_images_blocking(app)?;
         // The pull can take minutes — work may have started meanwhile.
         let post = update_safety();
-        if !post.safe {
+        if !post.safe && !now {
             if updated || farm_update_pending_blocking() {
                 let _ = app.emit(DEFERRED_EVENT, post.clone());
             }
             return Ok(Some(post));
         }
         recreate_dashboard()?;
+        updates::clear_cache();
         Ok(None)
     })();
     FARM_UPDATE_RUNNING.store(false, Ordering::SeqCst);
@@ -1027,6 +1032,22 @@ fn run_farm_update(app: &AppHandle) -> (u16, String) {
             let e: String = e.chars().take(400).collect();
             (500, serde_json::json!({ "ok": false, "error": e }).to_string())
         }
+    }
+}
+
+/// The tray dialog's farm-only update (same path as the dashboard's bridge request). Ok(None) =
+/// installed; Ok(Some(msg)) = the farm is busy, it installs when idle.
+#[tauri::command]
+async fn update_farm_now(app: AppHandle, now: bool) -> Result<Option<String>, String> {
+    let (code, body) = tauri::async_runtime::spawn_blocking(move || run_farm_update(&app, now))
+        .await
+        .map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let msg = v["error"].as_str().unwrap_or("").to_string();
+    match code {
+        200 => Ok(None),
+        409 => Ok(Some(msg)),
+        _ => Err(msg),
     }
 }
 
@@ -1053,9 +1074,13 @@ fn start_host_bridge(app: AppHandle) {
 
                 let is_open_terminal = req.url() == "/open-terminal";
                 let is_update = req.url() == "/update-farm";
+                // One "Flux update" for the dashboard: what's new (app and/or images), and installing a
+                // new Flux app without stopping the farm (updates.rs).
+                let is_update_status = req.url().split('?').next() == Some("/update-status");
+                let is_update_app = req.url() == "/update-app";
 
                 let mut body = String::new();
-                if (is_discuss || is_open_terminal) && !is_options {
+                if (is_discuss || is_open_terminal || is_update || is_update_app) && !is_options {
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
                 }
                 let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -1079,10 +1104,26 @@ fn start_host_bridge(app: AppHandle) {
                 // Body reported back for /update-farm so the dashboard can show success/failure.
                 let mut resp_body = String::from("{\"ok\":true}");
                 let mut status = if is_options { 204u16 } else { 200u16 };
+                let now = parsed["now"].as_bool() == Some(true);
                 if is_update && !is_options {
-                    let (code, body) = run_farm_update(&app);
+                    let (code, body) = run_farm_update(&app, now);
                     status = code;
                     resp_body = body;
+                }
+                if is_update_status && !is_options {
+                    let refresh = req.url().contains("refresh=1");
+                    let st = tauri::async_runtime::block_on(updates::status(&app, refresh));
+                    resp_body = serde_json::to_string(&st).unwrap_or_else(|_| "{}".into());
+                }
+                if is_update_app && !is_options {
+                    match tauri::async_runtime::block_on(updates::start_app_update(&app, now)) {
+                        Ok(true) => { status = 202; resp_body = "{\"ok\":true,\"status\":\"installing\"}".into(); }
+                        Ok(false) => { resp_body = "{\"ok\":true,\"status\":\"up_to_date\"}".into(); }
+                        Err(e) => {
+                            status = 500;
+                            resp_body = serde_json::json!({ "ok": false, "error": e.chars().take(400).collect::<String>() }).to_string();
+                        }
+                    }
                 }
 
                 let mut resp = tiny_http::Response::from_string(resp_body)
@@ -1091,7 +1132,7 @@ fn start_host_bridge(app: AppHandle) {
                     resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", o.as_bytes()).unwrap());
                     resp.add_header(tiny_http::Header::from_bytes("Vary", "Origin").unwrap());
                 }
-                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "POST, OPTIONS").unwrap());
+                resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Methods", "GET, POST, OPTIONS").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap());
                 resp.add_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap());
                 let _ = req.respond(resp);
@@ -1149,11 +1190,12 @@ pub fn run() {
                 docker_env::sweep_temp_login_configs();
             }
             let show    = MenuItem::with_id(app, "show",    "Show Flux",             true, None::<&str>)?;
+            let updates = MenuItem::with_id(app, "updates", "Check for Updates…",     true, None::<&str>)?;
             let stop    = MenuItem::with_id(app, "stop",    "Stop Farm",              true, None::<&str>)?;
             let migrate = MenuItem::with_id(app, "migrate", "Migrate from Terminal…", true, None::<&str>)?;
             let reset   = MenuItem::with_id(app, "reset",   "Reset Setup…",           true, None::<&str>)?;
             let quit    = MenuItem::with_id(app, "quit",    "Quit",                   true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &stop, &migrate, &reset, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &updates, &stop, &migrate, &reset, &quit])?;
 
             // macOS: monochrome template icon (OS adapts to menu bar colour)
             // Windows: use default coloured app icon
@@ -1184,6 +1226,19 @@ pub fn run() {
                             let _ = w.set_always_on_top(false);
                             #[cfg(target_os = "macos")]
                             let _ = app.show();
+                        }
+                    }
+                    "updates" => {
+                        // The Flux window shows the one update dialog (app and/or farm images).
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.set_always_on_top(true);
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.set_always_on_top(false);
+                            #[cfg(target_os = "macos")]
+                            let _ = app.show();
+                            let _ = w.emit("update-check-requested", ());
                         }
                     }
                     "stop" => {
@@ -1257,6 +1312,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updates::check_updates,
+            updates::install_app_update,
+            updates::take_update_now_flag,
+            updates::take_after_update_flag,
+            update_farm_now,
             host_network_info,
             get_farm_dir,
             check_license,

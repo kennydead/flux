@@ -347,6 +347,32 @@ fn pull_cli(image: &str, login: Option<&crate::registry::Login>) -> Result<bool,
     }
 }
 
+/// Whether any of `images` differs from the registry: Some(true) = an update is waiting, Some(false) =
+/// all up to date, None = couldn't tell (no Docker, registry unreachable). Reads manifests only — no
+/// download. Same comparison as the pull's "already have exactly this tag" check.
+pub async fn images_outdated(images: Vec<String>) -> Option<bool> {
+    let login = tauri::async_runtime::spawn_blocking(crate::registry::ensure).await.ok().flatten();
+    let docker = connect().await.ok()?;
+    let v = docker.version().await.ok()?;
+    let os = v.os.unwrap_or_else(|| "linux".into());
+    let arch = v.arch.unwrap_or_else(|| "amd64".into());
+    let mut known = false;
+    for img in images {
+        let (img2, os2, arch2, login2) = (img.clone(), os.clone(), arch.clone(), login.clone());
+        let remote = tauri::async_runtime::spawn_blocking(move || fetch_remote(&img2, &os2, &arch2, login2.as_ref()))
+            .await
+            .ok()
+            .flatten();
+        let Some(digest) = remote.and_then(|r| r.digest) else { continue };
+        known = true;
+        let local = docker.inspect_image(&img).await.ok().and_then(|l| l.repo_digests).unwrap_or_default();
+        if !local.iter().any(|rd| rd.ends_with(&format!("@{digest}"))) {
+            return Some(true);
+        }
+    }
+    known.then_some(false)
+}
+
 /// Pull `images` in order, emitting one overall progress stream. Returns true when any image
 /// changed locally.
 pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<bool, String> {
