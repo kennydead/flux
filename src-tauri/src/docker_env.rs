@@ -51,6 +51,59 @@ pub fn get() -> DockerEnv {
     env
 }
 
+/// Flux's own data directory (the isolated config and the saved registry login live under it).
+pub fn data_dir() -> PathBuf {
+    APP_DATA_DIR.get().cloned().unwrap_or_else(|| crate::farm_dir().join(".flux"))
+}
+
+/// Write a file only its owner can read (it may carry the registry login).
+pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content)   // under the user's profile: only that user can read it
+    }
+}
+
+/// Put (Some) or remove (None) the ghcr.io login in Flux's ISOLATED docker config, so the CLI fallback
+/// and `docker compose` can pull the private images. Never touches the user's own docker config: with
+/// no isolated config (Windows, or macOS when isolation is off) it does nothing — the Engine API pulls
+/// carry the login themselves, and compose only starts images that are already pulled.
+pub fn set_registry_auth(host: &str, auth_b64: Option<&str>) {
+    let Some(dir) = get().config_dir else { return };
+    let path = dir.join("config.json");
+    let mut cfg = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    match auth_b64 {
+        Some(a) => cfg["auths"][host] = serde_json::json!({ "auth": a }),
+        None => {
+            if let Some(o) = cfg.get_mut("auths").and_then(|x| x.as_object_mut()) {
+                o.remove(host);
+                if o.is_empty() {
+                    cfg.as_object_mut().map(|m| m.remove("auths"));
+                }
+            }
+        }
+    }
+    if let Ok(content) = serde_json::to_string_pretty(&cfg) {
+        if let Err(e) = write_private(&path, &content) {
+            eprintln!("[flux] could not save the registry login in the docker config: {e}");
+        }
+    }
+}
+
 /// Apply PATH + the isolated config/host to a docker command.
 pub fn apply(cmd: &mut Command) {
     cmd.env("PATH", crate::augmented_path());
@@ -150,11 +203,22 @@ fn isolate(bin: &str, endpoint: Option<&str>) -> Option<(PathBuf, Option<String>
     let mut seen = std::collections::HashSet::new();
     plugin_dirs.retain(|d| Path::new(d).is_dir() && seen.insert(d.clone()));
 
-    let cfg = serde_json::json!({ "cliPluginsExtraDirs": plugin_dirs });
+    // Keep the registry login (registry.rs writes `auths` here): rewriting the file on every start
+    // used to wipe it. A non-empty `auths` also stops the CLI from picking a platform credential
+    // store (keychain) for this config — the login stays a plain owner-only file.
     let cfg_path = dir.join("config.json");
+    let mut cfg = serde_json::json!({ "cliPluginsExtraDirs": plugin_dirs });
+    if let Some(auths) = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|old| old.get("auths").cloned())
+        .filter(|a| a.as_object().map(|o| !o.is_empty()).unwrap_or(false))
+    {
+        cfg["auths"] = auths;
+    }
     let content = serde_json::to_string_pretty(&cfg).ok()?;
     if std::fs::read_to_string(&cfg_path).ok().as_deref() != Some(content.as_str()) {
-        std::fs::write(&cfg_path, content).ok()?;
+        write_private(&cfg_path, &content).ok()?;
     }
 
     // Prove compose still resolves with the isolated config; otherwise keep the old behaviour.
@@ -190,5 +254,36 @@ mod tests {
         assert!(out.status.success());
         let out = crate::docker_command().args(["info", "--format", "{{.ServerVersion}}"]).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+#[cfg(test)]
+mod registry_auth_tests {
+    /// The isolated config's rewrite on every start must keep the registry login (audit 2026-11-06).
+    #[test]
+    fn rewriting_keeps_the_auths() {
+        let dir = std::env::temp_dir().join(format!("flux-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"cliPluginsExtraDirs":["/old"],"auths":{"ghcr.io":{"auth":"dTp0"}}}"#).unwrap();
+        // what isolate() does: rebuild the plugin dirs, carry the auths over
+        let mut cfg = serde_json::json!({ "cliPluginsExtraDirs": ["/new"] });
+        if let Some(auths) = std::fs::read_to_string(&path).ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|old| old.get("auths").cloned())
+            .filter(|a| a.as_object().map(|o| !o.is_empty()).unwrap_or(false))
+        {
+            cfg["auths"] = auths;
+        }
+        super::write_private(&path, &serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back["auths"]["ghcr.io"]["auth"], "dTp0");
+        assert_eq!(back["cliPluginsExtraDirs"][0], "/new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

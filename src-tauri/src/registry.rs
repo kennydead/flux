@@ -4,37 +4,64 @@
 //! server hands a valid license a read-only login (`registry: {username, token}` in its answer); Flux
 //! asks for it with the key saved at first start (~/farm/logs/license_key.txt), then:
 //!  - passes it to its Engine API pulls (bollard), which never read docker's config;
-//!  - runs `docker login ghcr.io` with Flux's isolated DOCKER_CONFIG (docker_command), so the CLI
-//!    fallback and every `docker compose` call can pull too.
-//! No key, no login in the answer (an older license server), or the server unreachable → None: pulls
-//! stay anonymous, exactly as before, and a login from an earlier run is still in the isolated config.
-//! The user never sees or types any of this.
+//!  - writes it into Flux's ISOLATED docker config (`auths`, an owner-only file — no `docker login`,
+//!    so no keychain / credential manager and no prompt), so the CLI fallback and `docker compose`
+//!    can pull too. The user's own docker config is never touched (docker_env::set_registry_auth).
+//! The last good login is saved (owner-only) and used while the license server can't be reached; an
+//! explicit "license not valid" answer removes it. No key / no login from the server (an older one)
+//! → pulls stay anonymous, exactly as before. The user never sees or types any of this.
+//! (Audit 2026-11-06: `docker login` went to the macOS keychain and to the user's own config on
+//! Windows, the isolated config's rewrite on every start wiped it, and it had no timeout.)
 
-use std::io::Write;
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const HOST: &str = "ghcr.io";
 const FRESH_FOR: Duration = Duration::from_secs(30 * 60);
+const SAVED: &str = "registry-login.json";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Login {
     pub username: String,
     pub token: String,
 }
 
+impl std::fmt::Debug for Login {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Login {{ username: {:?}, token: <redacted> }}", self.username)
+    }
+}
+
+/// What the license server said about the registry login.
+#[derive(Debug, PartialEq)]
+pub enum Answer {
+    Login(Login),
+    /// Valid, but no login in the answer (an older server): anonymous pulls.
+    NoLogin,
+    /// The license is not valid (revoked, expired, unknown): forget any saved login.
+    Invalid,
+}
+
 static CACHE: Mutex<Option<(Login, Instant)>> = Mutex::new(None);
 
 /// The `registry` part of a license-server answer, when it carries a usable login.
+#[cfg(test)]
 pub fn from_answer(body: &serde_json::Value) -> Option<Login> {
-    let r = body.get("registry")?;
-    let username = r.get("username")?.as_str()?.trim().to_string();
-    let token = r.get("token")?.as_str()?.trim().to_string();
-    if username.is_empty() || token.is_empty() || body.get("valid").and_then(|v| v.as_bool()) != Some(true) {
-        return None;
+    match classify(body) {
+        Answer::Login(l) => Some(l),
+        _ => None,
     }
-    Some(Login { username, token })
+}
+
+pub fn classify(body: &serde_json::Value) -> Answer {
+    if body.get("valid").and_then(|v| v.as_bool()) != Some(true) {
+        return Answer::Invalid;
+    }
+    let get = |k: &str| body.get("registry").and_then(|r| r.get(k)).and_then(|v| v.as_str()).map(|v| v.trim().to_string());
+    match (get("username"), get("token")) {
+        (Some(username), Some(token)) if !username.is_empty() && !token.is_empty() => Answer::Login(Login { username, token }),
+        _ => Answer::NoLogin,
+    }
 }
 
 fn license_key() -> Option<String> {
@@ -43,42 +70,59 @@ fn license_key() -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
-fn ask_license_server(key: &str) -> Option<Login> {
-    let res = ureq::post(crate::LICENSE_ENDPOINT)
+/// None = the server could not be reached, answered an HTTP error, or something unreadable (keep what we have).
+fn ask_license_server(key: &str) -> Option<Answer> {
+    let res = match ureq::post(crate::LICENSE_ENDPOINT)
         .timeout(Duration::from_secs(8))
         .send_json(serde_json::json!({ "key": key }))
-        .ok()?;
+    {
+        Ok(r) => r,
+        // Any HTTP error is the server's problem, not a verdict: a misdeployed function once answered
+        // 401 to every install (2026-07-06). Only an explicit `valid: false` revokes the saved login.
+        Err(_) => return None,
+    };
     let body: serde_json::Value = res.into_json().ok()?;
-    from_answer(&body)
+    Some(classify(&body))
 }
 
-/// `docker login ghcr.io` in Flux's isolated docker config; the token goes on stdin, never argv.
-fn docker_login(login: &Login) -> bool {
-    let child = crate::docker_command()
-        .args(["login", HOST, "-u", &login.username, "--password-stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn();
-    let Ok(mut child) = child else { return false };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(login.token.as_bytes());
-    }
-    match child.wait_with_output() {
-        Ok(out) if out.status.success() => true,
-        Ok(out) => {
-            eprintln!("[flux] docker login to {HOST} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-            false
-        }
-        Err(e) => {
-            eprintln!("[flux] docker login to {HOST} could not run: {e}");
-            false
-        }
+fn saved_path() -> std::path::PathBuf {
+    crate::docker_env::data_dir().join(SAVED)
+}
+
+fn load_saved() -> Option<Login> {
+    let raw = std::fs::read_to_string(saved_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let (u, t) = (v.get("username")?.as_str()?, v.get("token")?.as_str()?);
+    (!u.is_empty() && !t.is_empty()).then(|| Login { username: u.into(), token: t.into() })
+}
+
+fn save(login: &Login) {
+    let dir = crate::docker_env::data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let body = serde_json::json!({ "username": login.username, "token": login.token }).to_string();
+    if let Err(e) = crate::docker_env::write_private(&saved_path(), &body) {
+        eprintln!("[flux] could not save the registry login: {e}");
     }
 }
 
-/// The login for this session (asked at most every 30 minutes), with the docker CLI logged in too.
-/// Blocking: call it from spawn_blocking.
+fn forget() {
+    let _ = std::fs::remove_file(saved_path());
+    crate::docker_env::set_registry_auth(HOST, None);
+    if let Ok(mut g) = CACHE.lock() {
+        *g = None;
+    }
+}
+
+fn remember(login: &Login) {
+    save(login);
+    crate::docker_env::set_registry_auth(HOST, Some(&base64(format!("{}:{}", login.username, login.token).as_bytes())));
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((login.clone(), Instant::now()));
+    }
+}
+
+/// The login for this session (asked at most every 30 minutes), also written into Flux's isolated
+/// docker config. Blocking: call it from spawn_blocking.
 pub fn ensure() -> Option<Login> {
     if let Ok(guard) = CACHE.lock() {
         if let Some((login, at)) = guard.as_ref() {
@@ -87,12 +131,20 @@ pub fn ensure() -> Option<Login> {
             }
         }
     }
-    let login = ask_license_server(&license_key()?)?;
-    docker_login(&login);
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some((login.clone(), Instant::now()));
+    let Some(key) = license_key() else { return load_saved() };
+    match ask_license_server(&key) {
+        Some(Answer::Login(login)) => {
+            remember(&login);
+            Some(login)
+        }
+        Some(Answer::Invalid) => {
+            forget();
+            None
+        }
+        Some(Answer::NoLogin) => None,
+        // Unreachable: keep updating with the last good login (only an explicit "not valid" revokes it).
+        None => load_saved(),
     }
-    Some(login)
 }
 
 /// "Basic …" header value for the ghcr.io token endpoint.
@@ -122,6 +174,22 @@ mod tests {
     fn a_valid_answer_with_a_login() {
         let body = serde_json::json!({"valid": true, "registry": {"host": "ghcr.io", "username": "kennydead", "token": "ghp_x"}});
         assert_eq!(from_answer(&body), Some(Login { username: "kennydead".into(), token: "ghp_x".into() }));
+    }
+
+    #[test]
+    fn answers_are_told_apart() {
+        assert_eq!(classify(&serde_json::json!({"valid": false})), Answer::Invalid);
+        assert_eq!(classify(&serde_json::json!({"valid": "yes"})), Answer::Invalid);
+        assert_eq!(classify(&serde_json::json!({})), Answer::Invalid);
+        assert_eq!(classify(&serde_json::json!({"valid": true})), Answer::NoLogin);
+        assert_eq!(classify(&serde_json::json!({"valid": true, "registry": {"username": 5, "token": "t"}})), Answer::NoLogin);
+    }
+
+    #[test]
+    fn the_token_never_prints() {
+        let l = Login { username: "kennydead".into(), token: "ghp_secret".into() };
+        let shown = format!("{l:?} {:?}", Answer::Login(l.clone()));
+        assert!(!shown.contains("ghp_secret") && shown.contains("kennydead"));
     }
 
     #[test]
