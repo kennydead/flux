@@ -164,7 +164,14 @@ pub fn ensure() -> Option<Login> {
             None
         }
         // Unreachable: keep updating with the last good login (only an explicit "not valid" revokes it).
-        None => load_saved(),
+        // Past its age it goes everywhere, the isolated docker config included.
+        None => {
+            let saved = load_saved();
+            if saved.is_none() {
+                forget();
+            }
+            saved
+        }
     }
 }
 

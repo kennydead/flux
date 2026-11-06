@@ -1146,6 +1146,7 @@ pub fn run() {
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
                 docker_env::set_app_data_dir(dir);
+                docker_env::sweep_temp_login_configs();
             }
             let show    = MenuItem::with_id(app, "show",    "Show Flux",             true, None::<&str>)?;
             let stop    = MenuItem::with_id(app, "stop",    "Stop Farm",              true, None::<&str>)?;

@@ -143,6 +143,17 @@ pub fn temp_login_config(host: &str, auth_b64: &str) -> Option<PathBuf> {
     }
 }
 
+/// Remove one-off login configs a killed Flux left behind (they hold the registry login). Startup.
+pub fn sweep_temp_login_configs() {
+    if let Ok(entries) = std::fs::read_dir(data_dir()) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with("pull-login-") {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
 /// The isolated config.json: the plugin dirs, plus the `auths` already in the file (registry.rs writes
 /// them; rewriting the file on every start used to wipe the login).
 fn merged_config(cfg_path: &Path, plugin_dirs: &[String]) -> serde_json::Value {

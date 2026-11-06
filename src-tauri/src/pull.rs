@@ -298,6 +298,9 @@ async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker,
 /// ghcr.io turned the login down (or wants one).
 fn is_auth_error(e: &str) -> bool {
     let e = e.to_ascii_lowercase();
+    if e.contains("permission denied") {
+        return false;   // the docker socket / a file, not the registry
+    }
     ["unauthorized", "denied", "authentication required", "status code 401", "status code 403"]
         .iter()
         .any(|m| e.contains(m))
@@ -307,14 +310,25 @@ fn is_auth_error(e: &str) -> bool {
 /// config (Windows), the pull gets a one-off config holding just the login, removed right after.
 fn pull_cli(image: &str, login: Option<&crate::registry::Login>) -> Result<bool, String> {
     let mut cmd = crate::docker_command();
+    let env = crate::docker_env::get();
+    // Only for a plain local endpoint: an empty config has no contexts, so the endpoint goes along as
+    // DOCKER_HOST; a tcp/ssh context may need TLS material from the user's config → keep that config
+    // (anonymous, as before).
+    let local_endpoint = match env.endpoint.as_deref() {
+        None => true,
+        Some(h) => h.starts_with("unix://") || h.starts_with("npipe://"),
+    };
     let temp = match login {
-        Some(l) if image.starts_with("ghcr.io/") && crate::docker_env::get().config_dir.is_none() => {
+        Some(l) if image.starts_with("ghcr.io/") && env.config_dir.is_none() && local_endpoint => {
             crate::docker_env::temp_login_config(crate::registry::HOST, &crate::registry::auth_b64(l))
         }
         _ => None,
     };
     if let Some(dir) = &temp {
-        cmd.env("DOCKER_CONFIG", dir);
+        cmd.env("DOCKER_CONFIG", dir).env_remove("DOCKER_CONTEXT");
+        if let Some(h) = &env.endpoint {
+            cmd.env("DOCKER_HOST", h);
+        }
     }
     let output = cmd.args(["pull", image]).output();
     if let Some(dir) = &temp {
@@ -457,6 +471,7 @@ mod tests {
         assert!(is_auth_error("Docker responded with status code 401: ..."));
         assert!(!is_auth_error("the download of agent stalled (no data for 180 s)"));
         assert!(!is_auth_error("no space left on device"));
+        assert!(!is_auth_error("permission denied while trying to connect to the Docker daemon socket"));
     }
 
     #[test]
