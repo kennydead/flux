@@ -7,9 +7,11 @@
 //!  - writes it into Flux's ISOLATED docker config (`auths`, an owner-only file — no `docker login`,
 //!    so no keychain / credential manager and no prompt), so the CLI fallback and `docker compose`
 //!    can pull too. The user's own docker config is never touched (docker_env::set_registry_auth).
-//! The last good login is saved (owner-only) and used while the license server can't be reached; an
-//! explicit "license not valid" answer removes it. No key / no login from the server (an older one)
-//! → pulls stay anonymous, exactly as before. The user never sees or types any of this.
+//! The last good login is saved (owner-only) and used while the license server can't be reached (for
+//! up to SAVED_FOR); an explicit "license not valid" answer removes it, and so do no key and no login
+//! in a valid answer (an older server, or images public again) → pulls stay anonymous, exactly as
+//! before. A login ghcr.io rejects (rotated) is asked for again, then dropped for an anonymous pull
+//! (pull.rs). The user never sees or types any of this.
 //! (Audit 2026-11-06: `docker login` went to the macOS keychain and to the user's own config on
 //! Windows, the isolated config's rewrite on every start wiped it, and it had no timeout.)
 
@@ -19,6 +21,9 @@ use std::time::{Duration, Instant};
 pub const HOST: &str = "ghcr.io";
 const FRESH_FOR: Duration = Duration::from_secs(30 * 60);
 const SAVED: &str = "registry-login.json";
+/// How long a saved login stands in for the license server (a blocked server must not keep a revoked
+/// install pulling forever).
+const SAVED_FOR: Duration = Duration::from_secs(14 * 24 * 3600);
 
 #[derive(Clone, PartialEq)]
 pub struct Login {
@@ -89,9 +94,17 @@ fn saved_path() -> std::path::PathBuf {
     crate::docker_env::data_dir().join(SAVED)
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 fn load_saved() -> Option<Login> {
     let raw = std::fs::read_to_string(saved_path()).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let saved_at = v.get("saved_at")?.as_u64()?;
+    if now_secs().saturating_sub(saved_at) > SAVED_FOR.as_secs() {
+        return None;
+    }
     let (u, t) = (v.get("username")?.as_str()?, v.get("token")?.as_str()?);
     (!u.is_empty() && !t.is_empty()).then(|| Login { username: u.into(), token: t.into() })
 }
@@ -99,13 +112,14 @@ fn load_saved() -> Option<Login> {
 fn save(login: &Login) {
     let dir = crate::docker_env::data_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let body = serde_json::json!({ "username": login.username, "token": login.token }).to_string();
+    let body = serde_json::json!({ "username": login.username, "token": login.token, "saved_at": now_secs() }).to_string();
     if let Err(e) = crate::docker_env::write_private(&saved_path(), &body) {
         eprintln!("[flux] could not save the registry login: {e}");
     }
 }
 
-fn forget() {
+/// Remove the login everywhere (saved file, isolated docker config, this session). Also on reset.
+pub fn forget() {
     let _ = std::fs::remove_file(saved_path());
     crate::docker_env::set_registry_auth(HOST, None);
     if let Ok(mut g) = CACHE.lock() {
@@ -115,7 +129,7 @@ fn forget() {
 
 fn remember(login: &Login) {
     save(login);
-    crate::docker_env::set_registry_auth(HOST, Some(&base64(format!("{}:{}", login.username, login.token).as_bytes())));
+    crate::docker_env::set_registry_auth(HOST, Some(&auth_b64(login)));
     if let Ok(mut g) = CACHE.lock() {
         *g = Some((login.clone(), Instant::now()));
     }
@@ -131,7 +145,10 @@ pub fn ensure() -> Option<Login> {
             }
         }
     }
-    let Some(key) = license_key() else { return load_saved() };
+    let Some(key) = license_key() else {
+        forget();   // no license on this machine (reset) → no login
+        return None;
+    };
     match ask_license_server(&key) {
         Some(Answer::Login(login)) => {
             remember(&login);
@@ -141,15 +158,32 @@ pub fn ensure() -> Option<Login> {
             forget();
             None
         }
-        Some(Answer::NoLogin) => None,
+        // Valid but no login handed out (older server, or images public again): stop sending the old one.
+        Some(Answer::NoLogin) => {
+            forget();
+            None
+        }
         // Unreachable: keep updating with the last good login (only an explicit "not valid" revokes it).
         None => load_saved(),
     }
 }
 
+/// Ask the license server again now (ghcr.io rejected the login we had — e.g. a rotated token).
+pub fn refresh() -> Option<Login> {
+    if let Ok(mut g) = CACHE.lock() {
+        *g = None;
+    }
+    ensure()
+}
+
+/// base64("user:token"), the form docker configs store.
+pub fn auth_b64(login: &Login) -> String {
+    base64(format!("{}:{}", login.username, login.token).as_bytes())
+}
+
 /// "Basic …" header value for the ghcr.io token endpoint.
 pub fn basic_auth(login: &Login) -> String {
-    format!("Basic {}", base64(format!("{}:{}", login.username, login.token).as_bytes()))
+    format!("Basic {}", auth_b64(login))
 }
 
 fn base64(input: &[u8]) -> String {

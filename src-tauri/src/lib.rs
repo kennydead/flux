@@ -166,6 +166,10 @@ async fn validate_license_key(key: String) -> Result<bool, String> {
                     .unwrap_or(serde_json::json!({ "valid": false }));
                 Ok(body["valid"].as_bool().unwrap_or(false))
             }
+            // 5xx = the license server's own trouble (e.g. its database), not a verdict on the key.
+            Err(ureq::Error::Status(code, _)) if code >= 500 => {
+                Err("The license server is having trouble right now. Please try again in a minute.".to_string())
+            }
             Err(ureq::Error::Status(_, _)) => Ok(false),
             Err(e) => Err(format!("Could not verify license key. Check your internet connection.\n\nDetails: {e}")),
         }
@@ -668,6 +672,7 @@ async fn soft_reset() -> Result<(), String> {
 
     // Remove farm directory (clears setup_complete flag and old scripts)
     let _ = std::fs::remove_dir_all(&farm);
+    registry::forget();   // the image login belongs to the license that was just removed
 
     Ok(())
 }
@@ -687,6 +692,7 @@ async fn reset_setup() -> Result<(), String> {
 
     // Remove license key
     let _ = std::fs::remove_file(farm.join("logs").join("license_key.txt"));
+    registry::forget();
 
     // Remove Claude auth volume
     let _ = tauri::async_runtime::spawn_blocking(move || {

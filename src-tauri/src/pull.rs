@@ -8,7 +8,7 @@
 //!    license's read-only login (registry.rs) is passed with each pull instead;
 //!  - it works the same on macOS (unix socket) and Windows (named pipe).
 //! The daemon only reports a layer's size once that layer starts downloading (3 at a time), so
-//! the overall total comes from the registry manifests (ghcr anonymous token, a few small GETs)
+//! the overall total comes from the registry manifests (ghcr token, a few small GETs)
 //! fetched up front. If the manifests can't be read, the bar is marked indeterminate and the UI
 //! shows its step text instead. If the Engine API can't be reached at all, the pull falls back to
 //! the CLI (with the isolated docker config) — the old behaviour, without a bar.
@@ -74,15 +74,16 @@ fn fetch_remote(image: &str, os: &str, arch: &str, login: Option<&crate::registr
     let (name, tag) = split_ref(image);
     let repo = name.strip_prefix("ghcr.io/")?;
     let timeout = Duration::from_secs(8);
-    let mut req = ureq::get(&format!("https://ghcr.io/token?scope=repository:{repo}:pull")).timeout(timeout);
-    if let Some(l) = login {
-        req = req.set("Authorization", &crate::registry::basic_auth(l));
-    }
-    let token: serde_json::Value = req
-        .call()
-        .ok()?
-        .into_json()
-        .ok()?;
+    let token_url = format!("https://ghcr.io/token?scope=repository:{repo}:pull");
+    let ask = |login: Option<&crate::registry::Login>| -> Option<serde_json::Value> {
+        let mut req = ureq::get(&token_url).timeout(timeout);
+        if let Some(l) = login {
+            req = req.set("Authorization", &crate::registry::basic_auth(l));
+        }
+        req.call().ok()?.into_json().ok()
+    };
+    // A rejected login (rotated) → anonymously, which works while the images are public.
+    let token = ask(login).or_else(|| login.and_then(|_| ask(None)))?;
     let auth = format!("Bearer {}", token["token"].as_str()?);
     let accept = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
     let get = |reference: &str| -> Option<(Option<String>, serde_json::Value)> {
@@ -294,12 +295,32 @@ async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker,
     })
 }
 
-/// The old way: `docker pull` through the CLI (isolated config). Blocking.
-fn pull_cli(image: &str) -> Result<bool, String> {
-    let output = crate::docker_command()
-        .args(["pull", image])
-        .output()
-        .map_err(|e| format!("Failed to pull {image}: {e}"))?;
+/// ghcr.io turned the login down (or wants one).
+fn is_auth_error(e: &str) -> bool {
+    let e = e.to_ascii_lowercase();
+    ["unauthorized", "denied", "authentication required", "status code 401", "status code 403"]
+        .iter()
+        .any(|m| e.contains(m))
+}
+
+/// The old way: `docker pull` through the CLI (isolated config). Blocking. With a login but no isolated
+/// config (Windows), the pull gets a one-off config holding just the login, removed right after.
+fn pull_cli(image: &str, login: Option<&crate::registry::Login>) -> Result<bool, String> {
+    let mut cmd = crate::docker_command();
+    let temp = match login {
+        Some(l) if image.starts_with("ghcr.io/") && crate::docker_env::get().config_dir.is_none() => {
+            crate::docker_env::temp_login_config(crate::registry::HOST, &crate::registry::auth_b64(l))
+        }
+        _ => None,
+    };
+    if let Some(dir) = &temp {
+        cmd.env("DOCKER_CONFIG", dir);
+    }
+    let output = cmd.args(["pull", image]).output();
+    if let Some(dir) = &temp {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let output = output.map_err(|e| format!("Failed to pull {image}: {e}"))?;
     if output.status.success() {
         let combined = format!(
             "{}{}",
@@ -316,7 +337,7 @@ fn pull_cli(image: &str) -> Result<bool, String> {
 /// changed locally.
 pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<bool, String> {
     // The license's read-only login (private images); None → anonymous, as before.
-    let login = tauri::async_runtime::spawn_blocking(crate::registry::ensure).await.ok().flatten();
+    let mut login = tauri::async_runtime::spawn_blocking(crate::registry::ensure).await.ok().flatten();
     let docker = match connect().await {
         Ok(d) => Some(d),
         Err(e) => {
@@ -370,7 +391,26 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
         tracker.start_image(i, remotes[i].as_ref());
         tracker.emit("pulling", &short, true);
         let api_result = match &docker {
-            Some(d) => Some(pull_api(d, img, &mut tracker, login.as_ref()).await),
+            Some(d) => {
+                let mut r = pull_api(d, img, &mut tracker, login.as_ref()).await;
+                // ghcr.io turned the login down (rotated token): ask the license server again, then pull
+                // anonymously (fine while the images are public) — never stay stuck on a dead login.
+                if matches!(&r, Err(e) if is_auth_error(e)) && login.is_some() && img.starts_with("ghcr.io/") {
+                    let old = login.clone();
+                    let fresh = tauri::async_runtime::spawn_blocking(crate::registry::refresh).await.ok().flatten();
+                    if fresh.is_some() && fresh != old {
+                        login = fresh;
+                        r = pull_api(d, img, &mut tracker, login.as_ref()).await;
+                    }
+                    if matches!(&r, Err(e) if is_auth_error(e)) {
+                        eprintln!("[flux] the registry login was refused; pulling {img} without it");
+                        let _ = tauri::async_runtime::spawn_blocking(crate::registry::forget).await;
+                        login = None;
+                        r = pull_api(d, img, &mut tracker, None).await;
+                    }
+                }
+                Some(r)
+            }
             None => None,
         };
         let updated = match api_result {
@@ -382,10 +422,20 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
                 // No byte progress from the CLI: this image's share becomes unknown.
                 tracker.current_known = false;
                 tracker.emit("pulling", &short, true);
-                let img2 = img.clone();
-                tauri::async_runtime::spawn_blocking(move || pull_cli(&img2))
+                let (img2, login2) = (img.clone(), login.clone());
+                let mut r = tauri::async_runtime::spawn_blocking(move || pull_cli(&img2, login2.as_ref()))
                     .await
-                    .map_err(|e| e.to_string())??
+                    .map_err(|e| e.to_string())?;
+                if matches!(&r, Err(e) if is_auth_error(e)) && login.is_some() && img.starts_with("ghcr.io/") {
+                    eprintln!("[flux] the registry login was refused; pulling {img} without it");
+                    let _ = tauri::async_runtime::spawn_blocking(crate::registry::forget).await;
+                    login = None;
+                    let img2 = img.clone();
+                    r = tauri::async_runtime::spawn_blocking(move || pull_cli(&img2, None))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                r?
             }
         };
         any_updated |= updated;
@@ -399,6 +449,15 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_a_refused_login_from_other_failures() {
+        assert!(is_auth_error("Error response from daemon: Head \"https://ghcr.io/v2/x/manifests/latest\": unauthorized"));
+        assert!(is_auth_error("denied: denied"));
+        assert!(is_auth_error("Docker responded with status code 401: ..."));
+        assert!(!is_auth_error("the download of agent stalled (no data for 180 s)"));
+        assert!(!is_auth_error("no space left on device"));
+    }
 
     #[test]
     fn splits_refs() {
