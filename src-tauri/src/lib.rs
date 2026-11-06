@@ -9,6 +9,7 @@ mod docker_env;
 mod pull;
 mod registry;
 mod updates;
+mod keep_awake;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
@@ -48,8 +49,17 @@ fn farm_dir() -> PathBuf {
 // GUI apps on Mac inherit a minimal PATH — augment it so credential helpers are found
 fn augmented_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
-    let extras = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    if current.is_empty() { extras.to_string() } else { format!("{extras}:{current}") }
+    // Windows: PATH is ';'-separated and has no Unix dirs — prefixing "/usr/local/bin:…:" glued them
+    // onto the user's FIRST real entry and broke it (Docker / Python not found when that was first).
+    #[cfg(windows)]
+    {
+        current
+    }
+    #[cfg(not(windows))]
+    {
+        let extras = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        if current.is_empty() { extras.to_string() } else { format!("{extras}:{current}") }
+    }
 }
 
 // On Mac, GUI apps may not inherit PATH — check known Docker Desktop locations
@@ -649,6 +659,7 @@ async fn run_docker_compose(sub_args: Vec<String>) -> Result<String, String> {
 
 #[tauri::command]
 async fn stop_farm() -> Result<(), String> {
+    keep_awake::set_farm_running(false);
     let farm = farm_dir();
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     tauri::async_runtime::spawn_blocking(move || {
@@ -709,6 +720,7 @@ async fn reset_setup() -> Result<(), String> {
 
 #[tauri::command]
 async fn confirm_quit(app: AppHandle) {
+    keep_awake::set_farm_running(false);
     let farm = farm_dir();
     let compose_file = farm.join("docker-compose.yml").to_string_lossy().into_owned();
     let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -1191,11 +1203,14 @@ pub fn run() {
             }
             let show    = MenuItem::with_id(app, "show",    "Show Flux",             true, None::<&str>)?;
             let updates = MenuItem::with_id(app, "updates", "Check for Updates…",     true, None::<&str>)?;
+            let awake   = tauri::menu::CheckMenuItem::with_id(app, "keepawake",
+                "Keep Computer Awake While the Farm Runs", true, keep_awake::enabled(), None::<&str>)?;
+            app.manage(keep_awake::TrayItem(awake.clone()));
             let stop    = MenuItem::with_id(app, "stop",    "Stop Farm",              true, None::<&str>)?;
             let migrate = MenuItem::with_id(app, "migrate", "Migrate from Terminal…", true, None::<&str>)?;
             let reset   = MenuItem::with_id(app, "reset",   "Reset Setup…",           true, None::<&str>)?;
             let quit    = MenuItem::with_id(app, "quit",    "Quit",                   true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &updates, &stop, &migrate, &reset, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &updates, &awake, &stop, &migrate, &reset, &quit])?;
 
             // macOS: monochrome template icon (OS adapts to menu bar colour)
             // Windows: use default coloured app icon
@@ -1227,6 +1242,14 @@ pub fn run() {
                             #[cfg(target_os = "macos")]
                             let _ = app.show();
                         }
+                    }
+                    "keepawake" => {
+                        // Flip the setting (don't trust the item's own toggle state across platforms).
+                        let on = keep_awake::set_enabled(!keep_awake::enabled());
+                        if let Some(item) = app.try_state::<keep_awake::TrayItem>() {
+                            let _ = item.0.set_checked(on);
+                        }
+                        let _ = app.emit("keep-awake-changed", on);
                     }
                     "updates" => {
                         // The Flux window shows the one update dialog (app and/or farm images).
@@ -1313,6 +1336,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             updates::check_updates,
+            keep_awake::get_keep_awake,
+            keep_awake::set_keep_awake,
+            keep_awake::farm_running_changed,
             updates::install_app_update,
             updates::take_update_now_flag,
             updates::take_after_update_flag,
