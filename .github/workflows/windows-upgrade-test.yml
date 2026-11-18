@@ -66,7 +66,8 @@ jobs:
           $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA\Flux", "$env:ProgramFiles\Flux" -Filter "flux.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw "Flux 0.5.8 did not install" }
           Write-Host "Flux 0.5.8 at $($exe.FullName)"
-          New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`"" -Force | Out-Null
+          # Set-ItemProperty creates or overwrites (0.5.8 may have just written its own entry).
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`""
           $hadDesk = Get-ChildItem "$env:PUBLIC\Desktop", "$env:USERPROFILE\Desktop" -Filter "Flux.lnk" -ErrorAction SilentlyContinue
           Write-Host "0.5.8 desktop shortcut: $([bool]$hadDesk)"
           "HAD_DESKTOP=$(if ($hadDesk) { 1 } else { 0 })" | Out-File -Append $env:GITHUB_ENV
