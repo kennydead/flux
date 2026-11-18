@@ -97,7 +97,7 @@ export default function HomeScreen({ onStart }: Props) {
         <div className="home-update-banner">
           {downloading ? (
             <>
-              <span>{downloadProgress < 100 ? `Downloading… ${downloadProgress}%` : "Installing… Flux restarts, then updates the farm"}</span>
+              <span>{downloadProgress < 100 ? `Downloading… ${downloadProgress}%` : "Installing… Flux AI restarts, then updates the farm"}</span>
               <div className="home-update-progress">
                 <div className="home-update-progress-bar" style={{ width: `${downloadProgress}%` }} />
               </div>
@@ -107,7 +107,7 @@ export default function HomeScreen({ onStart }: Props) {
               <span className="home-update-text">
                 Update available: {updateVersion}
                 <span className="home-update-sub">
-                  Updating Flux also updates the farm. The farm part installs once the farm is idle,
+                  Updating Flux AI also updates the farm. The farm part installs once the farm is idle,
                   so running work isn't interrupted.
                 </span>
               </span>
@@ -123,11 +123,13 @@ export default function HomeScreen({ onStart }: Props) {
       <div className="home-hero">
         <div className="home-glow" />
         <div className="home-icon">
-          <img src={appIcon} alt="Flux" className="home-icon-img" />
+          <img src={appIcon} alt="" className="home-icon-img" />
         </div>
 
-        <h1 className="home-title">Flux</h1>
-        <p className="home-tagline">AI Agent Farm</p>
+        <h1 className="home-title-row" aria-label="Flux AI">
+          <span className="home-title">Flux</span><span className="home-title-ai">AI</span>
+        </h1>
+        <p className="home-tagline">Agent Farm</p>
         <p className="home-desc">
           Spin up a team of AI agents that plan, code, and review your software —
           all running locally on your machine.
@@ -160,7 +162,7 @@ export default function HomeScreen({ onStart }: Props) {
             checked={autostart}
             onChange={toggleAutostart}
           />
-          Launch Flux at login
+          Launch Flux AI at login
         </label>
         <label className="home-autostart">
           <input

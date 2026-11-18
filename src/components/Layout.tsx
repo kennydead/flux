@@ -11,7 +11,7 @@ export default function Layout({ children, narrow = true }: Props) {
     <div className="layout">
       <div className={`layout-inner ${narrow ? "layout-narrow" : ""}`}>
         <div className="layout-logo">
-          <span className="logo-text">Flux</span>
+          <span className="logo-text">Flux</span><span className="logo-ai">AI</span>
         </div>
         {children}
       </div>

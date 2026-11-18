@@ -43,7 +43,7 @@ export default function LicenseScreen({ onVerified }: Props) {
     <Layout>
       <div className="screen">
         <div className="screen-header">
-          <h1>Welcome to Flux</h1>
+          <h1>Welcome to Flux AI</h1>
           <p className="screen-subtitle">Enter your license key to get started.</p>
         </div>
 

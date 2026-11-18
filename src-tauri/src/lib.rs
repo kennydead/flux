@@ -1201,7 +1201,7 @@ pub fn run() {
                 docker_env::set_app_data_dir(dir);
                 docker_env::sweep_temp_login_configs();
             }
-            let show    = MenuItem::with_id(app, "show",    "Show Flux",             true, None::<&str>)?;
+            let show    = MenuItem::with_id(app, "show",    "Show Flux AI",           true, None::<&str>)?;
             let updates = MenuItem::with_id(app, "updates", "Check for Updates…",     true, None::<&str>)?;
             let awake   = tauri::menu::CheckMenuItem::with_id(app, "keepawake",
                 "Keep Computer Awake While the Farm Runs", true, keep_awake::enabled(), None::<&str>)?;

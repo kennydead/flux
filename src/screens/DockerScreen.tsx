@@ -52,7 +52,7 @@ export default function DockerScreen({ onReady }: Props) {
         <div className="screen-header">
           <h1>Docker Required</h1>
           <p className="screen-subtitle">
-            Flux uses Docker to run your AI agents securely.
+            Flux AI uses Docker to run your AI agents securely.
           </p>
         </div>
 
@@ -71,7 +71,7 @@ export default function DockerScreen({ onReady }: Props) {
               </Button>
               <p className="screen-footnote">
                 This opens an Administrator prompt to install WSL.
-                When it finishes, <strong>restart your computer manually</strong>, then reopen Flux to continue.
+                When it finishes, <strong>restart your computer manually</strong>, then reopen Flux AI to continue.
               </p>
             </div>
           )}
@@ -84,13 +84,13 @@ export default function DockerScreen({ onReady }: Props) {
               >
                 Download Docker Desktop →
               </Button>
-              <p className="screen-footnote">After installing and starting Docker, Flux will continue automatically.</p>
+              <p className="screen-footnote">After installing and starting Docker, Flux AI will continue automatically.</p>
             </div>
           )}
           {state === "not-running" && (
             <div className="docker-card">
               <p>Docker Desktop is installed but not running.</p>
-              <p className="screen-footnote">Please open Docker Desktop, then wait — Flux will continue automatically.</p>
+              <p className="screen-footnote">Please open Docker Desktop, then wait — Flux AI will continue automatically.</p>
             </div>
           )}
           {state === "ready" && (

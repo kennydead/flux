@@ -113,7 +113,7 @@ export default function App() {
     const c = listen<string>("flux-app-update-failed", (e) => {
       setAppUpdating(null);
       setNoticeHidden(false);
-      setUpdateError(`Flux could not update itself: ${e.payload}`);
+      setUpdateError(`Flux AI could not update itself: ${e.payload}`);
     });
     return () => { [a, b, c].forEach((u) => u.then((f) => f())); };
   }, []);
@@ -225,7 +225,7 @@ export default function App() {
       )}
       {appUpdating && (
         <div className="farm-update-notice">
-          <span>Updating Flux… this takes about a minute. Agents keep working.</span>
+          <span>Updating Flux AI… this takes about a minute. Agents keep working.</span>
         </div>
       )}
       {showUpdateDialog && (
@@ -240,7 +240,7 @@ export default function App() {
             {installingUpdate
               ? "Installing the farm update — the dashboard reloads in a moment…"
               : updateError
-                ? (updateError.startsWith("Flux could not") ? updateError.slice(0, 240) : `The farm update could not be installed: ${updateError.slice(0, 200)}`)
+                ? (updateError.startsWith("Flux AI could not") ? updateError.slice(0, 240) : `The farm update could not be installed: ${updateError.slice(0, 200)}`)
                 : `Farm update downloaded — it installs when the farm is idle${waitingFor.length ? ` (waiting for: ${reasonsText(waitingFor)})` : ""}.`}
           </span>
           {!installingUpdate && (
@@ -268,7 +268,7 @@ export default function App() {
               </>
             ) : (
               <>
-                <h2>Quit Flux?</h2>
+                <h2>Quit Flux AI?</h2>
                 <p>This will stop the farm and all running agents before closing.</p>
                 <div className="reset-actions">
                   <button className="reset-btn-cancel" onClick={() => setShowQuitConfirm(false)}>
@@ -319,7 +319,7 @@ export default function App() {
             <p>
               This will stop any running farm containers and remove the old farm directory.
               Your task history and AI credentials will be preserved.
-              Flux will guide you through setup again.
+              Flux AI will guide you through setup again.
             </p>
             <div className="reset-actions">
               <button

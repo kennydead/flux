@@ -25,6 +25,15 @@
   gap: 10px;
 }
 
+/* The wordmark's second tone: "AI" in solid violet next to the gradient "Flux". */
+.logo-ai {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-left: -4px;
+  color: var(--accent-end);
+}
+
 .logo-text {
   font-size: 22px;
   font-weight: 700;
