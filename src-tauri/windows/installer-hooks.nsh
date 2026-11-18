@@ -4,6 +4,10 @@
 ; identifier (unchanged) and the farm runs in Docker, so both stay. (owner 2026-11-18)
 
 !define LEGACY_UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Flux"
+!define RUNKEY "Software\Microsoft\Windows\CurrentVersion\Run"
+
+; The old uninstaller deletes its own "launch at login" entry: remember it, and set Flux AI's afterwards.
+Var FluxAILegacyAutostart
 
 !macro FLUXAI_UNQUOTE VAR
   StrCpy $R9 ${VAR} 1
@@ -13,6 +17,8 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
+  StrCpy $FluxAILegacyAutostart ""
+  ReadRegStr $FluxAILegacyAutostart HKCU "${RUNKEY}" "Flux"
   ReadRegStr $R7 SHCTX "${LEGACY_UNINSTKEY}" "UninstallString"
   StrCmp $R7 "" fluxai_no_legacy
     ReadRegStr $R8 SHCTX "${LEGACY_UNINSTKEY}" "InstallLocation"
@@ -25,4 +31,10 @@
     RMDir "$R8"
     DeleteRegKey SHCTX "${LEGACY_UNINSTKEY}"
   fluxai_no_legacy:
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  StrCmp $FluxAILegacyAutostart "" fluxai_no_autostart
+    WriteRegStr HKCU "${RUNKEY}" "${PRODUCTNAME}" '"$INSTDIR\${MAINBINARYNAME}.exe"'
+  fluxai_no_autostart:
 !macroend

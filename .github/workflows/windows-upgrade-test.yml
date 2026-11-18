@@ -67,6 +67,9 @@ jobs:
           if (-not $exe) { throw "Flux 0.5.8 did not install" }
           Write-Host "Flux 0.5.8 at $($exe.FullName)"
           New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`"" -Force | Out-Null
+          $hadDesk = Get-ChildItem "$env:PUBLIC\Desktop", "$env:USERPROFILE\Desktop" -Filter "Flux.lnk" -ErrorAction SilentlyContinue
+          Write-Host "0.5.8 desktop shortcut: $([bool]$hadDesk)"
+          "HAD_DESKTOP=$(if ($hadDesk) { 1 } else { 0 })" | Out-File -Append $env:GITHUB_ENV
           $data = "$env:APPDATA\com.claudeagentfarm.flux"
           New-Item -ItemType Directory -Force $data | Out-Null
           Set-Content "$data\upgrade-marker.txt" "kept"
@@ -101,6 +104,10 @@ jobs:
           $lnk = Get-ChildItem -Recurse "$env:APPDATA\Microsoft\Windows\Start Menu", "$env:ProgramData\Microsoft\Windows\Start Menu" -Filter "*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -like "Flux*" }
           $lnk | ForEach-Object { Write-Host "shortcut: $($_.FullName)" }
           if ($lnk | Where-Object { $_.BaseName -eq "Flux" }) { throw "the old Start menu entry is still there" }
+          $desk = Get-ChildItem "$env:PUBLIC\Desktop", "$env:USERPROFILE\Desktop" -Filter "*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -like "Flux*" }
+          $desk | ForEach-Object { Write-Host "desktop: $($_.FullName)" }
+          if ($desk | Where-Object { $_.BaseName -eq "Flux" }) { throw "the old desktop shortcut is still there" }
+          if ($env:HAD_DESKTOP -eq "1" -and -not ($desk | Where-Object { $_.BaseName -eq "Flux AI" })) { throw "the desktop shortcut was not carried over" }
           if (-not ($lnk | Where-Object { $_.BaseName -eq "Flux AI" })) { throw "no Flux AI Start menu entry" }
           if ((Get-Content "$env:APPDATA\com.claudeagentfarm.flux\upgrade-marker.txt") -ne "kept") { throw "settings were lost" }
           Write-Host "OK: one app (Flux AI), settings kept, Start menu right"

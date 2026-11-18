@@ -53,7 +53,14 @@
         "installerHooks": "windows/installer-hooks.nsh"
       },
       "wix": {
-        "upgradeCode": "a1a5345c-a3d6-5a6c-9c06-28434bb06576"
+        "upgradeCode": "a1a5345c-a3d6-5a6c-9c06-28434bb06576",
+        "fragmentPaths": [
+          "windows/legacy-flux.wxs"
+        ],
+        "componentRefs": [
+          "RemoveLegacyFluxShortcuts",
+          "FluxAIDesktopShortcutForLegacy"
+        ]
       }
     }
   }
