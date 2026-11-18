@@ -137,11 +137,11 @@ pub async fn start_app_update(app: &AppHandle, now: bool) -> Result<bool, String
         }
         Ok(Err(e)) => {
             APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
-            return Err(format!("Could not check for the Flux update: {e}"));
+            return Err(format!("Could not check for the Flux AI update: {e}"));
         }
         Err(_) => {
             APP_UPDATE_RUNNING.store(false, Ordering::SeqCst);
-            return Err("Checking for the Flux update timed out".to_string());
+            return Err("Checking for the Flux AI update timed out".to_string());
         }
     };
     let _ = app.emit(APP_UPDATING_EVENT, update.version.clone());

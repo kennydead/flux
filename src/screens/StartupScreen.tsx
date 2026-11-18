@@ -189,7 +189,7 @@ export default function StartupScreen({ onReady, onResetSetup }: Props) {
     <Layout>
       <div className="screen">
         <div className="screen-header">
-          <h1>Starting Flux</h1>
+          <h1>Starting Flux AI</h1>
           <p className="screen-subtitle">Setting up your agent farm…</p>
         </div>
 
