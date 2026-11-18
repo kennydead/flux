@@ -69,7 +69,7 @@ export default function LicenseScreen({ onVerified }: Props) {
         </Button>
 
         <p className="screen-footnote">
-          Don't have a key? Contact us at <span className="link">support@claudeagentfarm.com</span>
+          Don't have a key? Contact us at <span className="link">support@flux-ai.si</span>
         </p>
       </div>
     </Layout>
