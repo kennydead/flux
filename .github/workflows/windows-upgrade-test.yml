@@ -63,7 +63,7 @@ jobs:
           } else {
             Start-Process $old.FullName -Wait -ArgumentList "/S"
           }
-          $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA\Flux", "$env:ProgramFiles\Flux" -Filter "Flux.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA\Flux", "$env:ProgramFiles\Flux" -Filter "flux.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw "Flux 0.5.8 did not install" }
           Write-Host "Flux 0.5.8 at $($exe.FullName)"
           New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`"" -Force | Out-Null
@@ -91,8 +91,13 @@ jobs:
           $apps | ForEach-Object { Write-Host "installed: $($_.DisplayName) $($_.DisplayVersion)" }
           if (@($apps).Count -ne 1) { throw "expected exactly one Flux app, found $(@($apps).Count)" }
           if ($apps[0].DisplayName -ne "Flux AI") { throw "the installed app is '$($apps[0].DisplayName)'" }
-          $old = Get-ChildItem -Recurse "$env:LOCALAPPDATA", "$env:ProgramFiles" -Filter "Flux.exe" -ErrorAction SilentlyContinue
-          if ($old) { throw "the old Flux.exe is still there: $($old.FullName)" }
+          # The program file was always flux.exe; what changes is its folder (Flux -> Flux AI).
+          foreach ($d in "$env:LOCALAPPDATA\Flux", "$env:ProgramFiles\Flux") {
+            if (Test-Path "$d\flux.exe") { throw "the old install is still there: $d" }
+          }
+          $new = @("$env:LOCALAPPDATA\Flux AI\flux.exe", "$env:ProgramFiles\Flux AI\flux.exe") | Where-Object { Test-Path $_ }
+          if (-not $new) { throw "Flux AI is not in a 'Flux AI' folder" }
+          Write-Host "Flux AI at $new"
           $lnk = Get-ChildItem -Recurse "$env:APPDATA\Microsoft\Windows\Start Menu", "$env:ProgramData\Microsoft\Windows\Start Menu" -Filter "*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -like "Flux*" }
           $lnk | ForEach-Object { Write-Host "shortcut: $($_.FullName)" }
           if ($lnk | Where-Object { $_.BaseName -eq "Flux" }) { throw "the old Start menu entry is still there" }
@@ -103,9 +108,9 @@ jobs:
       - name: First start moves launch at login to the new name
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA", "$env:ProgramFiles" -Filter "Flux AI.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { throw "Flux AI.exe not found" }
-          $p = Start-Process $exe.FullName -PassThru
+          $exe = @("$env:LOCALAPPDATA\Flux AI\flux.exe", "$env:ProgramFiles\Flux AI\flux.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "Flux AI's flux.exe not found" }
+          $p = Start-Process $exe -PassThru
           Start-Sleep -Seconds 20
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Get-Process | Where-Object { $_.ProcessName -like "Flux*" } | Stop-Process -Force -ErrorAction SilentlyContinue
