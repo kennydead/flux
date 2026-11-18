@@ -67,7 +67,9 @@ jobs:
           if (-not $exe) { throw "Flux 0.5.8 did not install" }
           Write-Host "Flux 0.5.8 at $($exe.FullName)"
           # Set-ItemProperty creates or overwrites (0.5.8 may have just written its own entry).
-          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`""
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          if (-not (Test-Path $runKey)) { New-Item -Path $runKey | Out-Null }   # a fresh runner may not have it
+          Set-ItemProperty -Path $runKey -Name "Flux" -Value "`"$($exe.FullName)`""
           $hadDesk = Get-ChildItem "$env:PUBLIC\Desktop", "$env:USERPROFILE\Desktop" -Filter "Flux.lnk" -ErrorAction SilentlyContinue
           Write-Host "0.5.8 desktop shortcut: $([bool]$hadDesk)"
           "HAD_DESKTOP=$(if ($hadDesk) { 1 } else { 0 })" | Out-File -Append $env:GITHUB_ENV
