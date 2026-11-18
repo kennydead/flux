@@ -59,7 +59,8 @@
         ],
         "componentRefs": [
           "RemoveLegacyFluxShortcuts",
-          "FluxAIDesktopShortcutForLegacy"
+          "FluxAIDesktopShortcutForLegacy",
+          "FluxAIAutostartForLegacy"
         ]
       }
     }

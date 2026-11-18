@@ -23,6 +23,23 @@
       </Directory>
     </DirectoryRef>
 
+    <!-- "Launch at login" was registered as "Flux"; the old uninstall keeps that value, now pointing at
+         the removed app. Move it to "Flux AI" during the upgrade (the app itself cannot be relied on
+         to do it: MSI tests on 2026-11-18 showed the entry unchanged after the first start). -->
+    <Property Id="LEGACYAUTOSTART" Secure="yes">
+      <RegistrySearch Id="LegacyAutostartSearch" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                      Name="Flux" Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="FluxAIAutostartForLegacy" Guid="6B2E8D4A-1F57-4C93-8E0B-D5A7C2F31964">
+        <Condition>LEGACYAUTOSTART</Condition>
+        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Flux AI"
+                       Type="string" Value="&quot;[INSTALLDIR]flux.exe&quot;" KeyPath="yes" />
+        <RemoveRegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Flux" />
+      </Component>
+    </DirectoryRef>
+
     <DirectoryRef Id="DesktopFolder">
       <Component Id="FluxAIDesktopShortcutForLegacy" Guid="3C7B9E52-8A14-4F6D-B2E9-71D04A6C5F18">
         <Condition>LEGACYDESKTOPSHORTCUT</Condition>
