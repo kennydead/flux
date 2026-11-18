@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Flux",
+  "productName": "Flux AI",
   "version": "0.5.8",
   "identifier": "com.claudeagentfarm.flux",
   "build": {
@@ -47,6 +47,14 @@
     "resources": {
       "../resources/*": "./",
       "icons/tray-icon.png": "./tray-icon.png"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      },
+      "wix": {
+        "upgradeCode": "a1a5345c-a3d6-5a6c-9c06-28434bb06576"
+      }
     }
   }
 }

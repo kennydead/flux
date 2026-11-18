@@ -1,0 +1,116 @@
+# Manual check of the Flux → Flux AI rename on a real Windows machine (owner 2026-11-18): install the
+# released 0.5.8 ("Flux"), then this build ("Flux AI"), with both installer kinds the updater uses
+# (MSI and NSIS). There must be ONE app afterwards, the settings must survive, and "launch at login"
+# must move to the new name. Run it from the Actions tab on the branch to test.
+name: Windows upgrade test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-test]          # push the branch under test here to run it
+
+jobs:
+  upgrade:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [msi, nsis]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - run: npm install
+      - run: npm run build
+
+      - name: Build this version's ${{ matrix.kind }} installer (unsigned, no updater files)
+        shell: bash
+        run: npx tauri build --bundles ${{ matrix.kind }} --config '{"bundle":{"createUpdaterArtifacts":false},"build":{"beforeBuildCommand":""}}'
+
+      - name: Download Flux 0.5.8
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ matrix.kind }}" = msi ]; then f=Flux_0.5.8_x64_en-US.msi; else f=Flux_0.5.8_x64-setup.exe; fi
+          gh release download v0.5.8 --repo "$GITHUB_REPOSITORY" --pattern "$f" --dir old
+          ls -la old
+
+      - name: Install Flux 0.5.8, turn on launch at login, leave a settings marker
+        shell: pwsh
+        run: |
+          $old = Get-ChildItem old | Select-Object -First 1
+          if ("${{ matrix.kind }}" -eq "msi") {
+            # The upgrade code the new build pins must be the one 0.5.8 shipped with.
+            $wi = New-Object -ComObject WindowsInstaller.Installer
+            $db = $wi.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $wi, @($old.FullName, 0))
+            $v = $db.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $db, @("SELECT Value FROM Property WHERE Property='UpgradeCode'"))
+            $v.GetType().InvokeMember("Execute", "InvokeMethod", $null, $v, $null)
+            $r = $v.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $v, $null)
+            $code = $r.GetType().InvokeMember("StringData", "GetProperty", $null, $r, 1)
+            $want = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).bundle.windows.wix.upgradeCode
+            Write-Host "0.5.8 UpgradeCode $code, pinned $want"
+            if ($code.Trim('{}').ToLower() -ne $want.ToLower()) { throw "upgrade code mismatch" }
+            Start-Process msiexec -Wait -ArgumentList "/i `"$($old.FullName)`" /qn"
+          } else {
+            Start-Process $old.FullName -Wait -ArgumentList "/S"
+          }
+          $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA\Flux", "$env:ProgramFiles\Flux" -Filter "Flux.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "Flux 0.5.8 did not install" }
+          Write-Host "Flux 0.5.8 at $($exe.FullName)"
+          New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Flux" -Value "`"$($exe.FullName)`"" -Force | Out-Null
+          $data = "$env:APPDATA\com.claudeagentfarm.flux"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content "$data\upgrade-marker.txt" "kept"
+
+      - name: Install this version over it
+        shell: pwsh
+        run: |
+          if ("${{ matrix.kind }}" -eq "msi") {
+            $new = Get-ChildItem -Recurse src-tauri/target/release/bundle/msi -Filter *.msi | Select-Object -First 1
+            Start-Process msiexec -Wait -ArgumentList "/i `"$($new.FullName)`" /qn"
+          } else {
+            $new = Get-ChildItem -Recurse src-tauri/target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+            Start-Process $new.FullName -Wait -ArgumentList "/S"
+          }
+          Write-Host "installed $($new.Name)"
+
+      - name: One app, settings kept, start menu right
+        shell: pwsh
+        run: |
+          $apps = Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall, HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "Flux*" }
+          $apps | ForEach-Object { Write-Host "installed: $($_.DisplayName) $($_.DisplayVersion)" }
+          if (@($apps).Count -ne 1) { throw "expected exactly one Flux app, found $(@($apps).Count)" }
+          if ($apps[0].DisplayName -ne "Flux AI") { throw "the installed app is '$($apps[0].DisplayName)'" }
+          $old = Get-ChildItem -Recurse "$env:LOCALAPPDATA", "$env:ProgramFiles" -Filter "Flux.exe" -ErrorAction SilentlyContinue
+          if ($old) { throw "the old Flux.exe is still there: $($old.FullName)" }
+          $lnk = Get-ChildItem -Recurse "$env:APPDATA\Microsoft\Windows\Start Menu", "$env:ProgramData\Microsoft\Windows\Start Menu" -Filter "*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -like "Flux*" }
+          $lnk | ForEach-Object { Write-Host "shortcut: $($_.FullName)" }
+          if ($lnk | Where-Object { $_.BaseName -eq "Flux" }) { throw "the old Start menu entry is still there" }
+          if (-not ($lnk | Where-Object { $_.BaseName -eq "Flux AI" })) { throw "no Flux AI Start menu entry" }
+          if ((Get-Content "$env:APPDATA\com.claudeagentfarm.flux\upgrade-marker.txt") -ne "kept") { throw "settings were lost" }
+          Write-Host "OK: one app (Flux AI), settings kept, Start menu right"
+
+      - name: First start moves launch at login to the new name
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse "$env:LOCALAPPDATA", "$env:ProgramFiles" -Filter "Flux AI.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "Flux AI.exe not found" }
+          $p = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 20
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Process | Where-Object { $_.ProcessName -like "Flux*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          $run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $run.PSObject.Properties | Where-Object { $_.Name -like "Flux*" } | ForEach-Object { Write-Host "Run: $($_.Name) = $($_.Value)" }
+          if ($run.PSObject.Properties.Name -contains "Flux") { throw "the old 'Flux' launch-at-login entry is still there" }
+          if (-not ($run.PSObject.Properties.Name -contains "Flux AI")) { throw "launch at login was not moved to 'Flux AI'" }
+          Write-Host "OK: launch at login moved"

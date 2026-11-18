@@ -754,6 +754,42 @@ async fn check_for_update() -> Option<String> {
     .unwrap_or(None)
 }
 
+/// "Launch at login" is registered under the app's name, which was "Flux" up to 0.5.8. After the
+/// rename to Flux AI the old entry would still start the app while the switch showed it off (and the
+/// Windows one would point at the removed install): move it to the new name. (owner 2026-11-18)
+fn migrate_legacy_autostart(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    if app.package_info().name == "Flux" {
+        return;
+    }
+    #[allow(unused_mut)]
+    let mut had = false;
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let p = std::path::PathBuf::from(home).join("Library/LaunchAgents/Flux.plist");
+        if p.exists() {
+            had = true;
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const NO_WINDOW: u32 = 0x0800_0000;
+        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let found = std::process::Command::new("reg").args(["query", key, "/v", "Flux"])
+            .creation_flags(NO_WINDOW).output().map(|o| o.status.success()).unwrap_or(false);
+        if found {
+            had = true;
+            let _ = std::process::Command::new("reg").args(["delete", key, "/v", "Flux", "/f"])
+                .creation_flags(NO_WINDOW).output();
+        }
+    }
+    if had {
+        let _ = app.autolaunch().enable();
+    }
+}
+
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> bool {
     use tauri_plugin_autostart::ManagerExt;
@@ -1197,6 +1233,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            migrate_legacy_autostart(app.handle());
             if let Ok(dir) = app.path().app_data_dir() {
                 docker_env::set_app_data_dir(dir);
                 docker_env::sweep_temp_login_configs();
