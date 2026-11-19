@@ -53,7 +53,7 @@ export default function LicenseScreen({ onVerified }: Props) {
             <input
               className="field-input"
               type="text"
-              placeholder="FLUX-XXXX-XXXX-XXXX"
+              placeholder="FLUX-XXXX-XXXX-XXXX-XXXX-XXXX"
               value={key}
               onChange={(e) => setKey(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && verify()}
