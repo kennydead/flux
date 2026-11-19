@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -24,6 +25,9 @@ export default function HomeScreen({ onStart }: Props) {
   // Keep the computer awake while the farm runs (default on; the tray menu has the same switch).
   const [keepAwake, setKeepAwake] = useState(true);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  // The app's own version (tauri.conf.json), so a release changes it in one place only.
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -182,7 +186,7 @@ export default function HomeScreen({ onStart }: Props) {
       {/* Footer */}
       <footer className="home-footer">
         <div className="home-version-row">
-          <span className="home-version">v0.5.9</span>
+          {appVersion && <span className="home-version">v{appVersion}</span>}
           <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
             {checkingUpdate ? "Checking…" : "Check for updates"}
           </button>
