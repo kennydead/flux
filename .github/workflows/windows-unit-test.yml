@@ -1,0 +1,29 @@
+# Flux AI's own tests on a real Windows machine (owner 2026-11-20, before 1.0.0): above all the hardware id
+# for licence seats (reg query MachineGuid), which only runs on Windows. Run by pushing to windows-test.
+name: Windows unit tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-test]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - run: npm install
+      - run: npm run build
+      - name: Flux tests (incl. the Windows hardware id)
+        working-directory: src-tauri
+        run: cargo test machine_id -- --nocapture
