@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -8,6 +9,12 @@ import Button from "../components/Button";
 import appIcon from "../assets/app-icon.png";
 import { markUpdateFarmOnLaunch, takeUpdateFarmOnLaunch } from "../farmUpdate";
 import "./HomeScreen.css";
+
+const FOOTER_LINKS: [string, string][] = [
+  ["Help", "https://flux-ai.si/en/contact/"],
+  ["Privacy", "https://flux-ai.si/en/privacy/"],
+  ["Website", "https://flux-ai.si/en/"],
+];
 
 interface Props {
   onStart: () => void;
@@ -192,13 +199,13 @@ export default function HomeScreen({ onStart }: Props) {
           </button>
         </div>
         <div className="home-links">
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Help</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Privacy</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Terms</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Website</a>
+          {/* Opened in the browser. Terms joins once its page is on the website (after the legal review). */}
+          {FOOTER_LINKS.map(([label, url], i) => (
+            <span key={url}>
+              {i > 0 && <span className="home-dot">·</span>}
+              <a className="home-link" href={url} onClick={(e) => { e.preventDefault(); openUrl(url).catch(() => {}); }}>{label}</a>
+            </span>
+          ))}
         </div>
       </footer>
     </div>
