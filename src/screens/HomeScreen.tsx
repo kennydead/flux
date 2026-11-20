@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -7,6 +9,12 @@ import Button from "../components/Button";
 import appIcon from "../assets/app-icon.png";
 import { markUpdateFarmOnLaunch, takeUpdateFarmOnLaunch } from "../farmUpdate";
 import "./HomeScreen.css";
+
+const FOOTER_LINKS: [string, string][] = [
+  ["Help", "https://flux-ai.si/en/contact/"],
+  ["Privacy", "https://flux-ai.si/en/privacy/"],
+  ["Website", "https://flux-ai.si/en/"],
+];
 
 interface Props {
   onStart: () => void;
@@ -24,6 +32,9 @@ export default function HomeScreen({ onStart }: Props) {
   // Keep the computer awake while the farm runs (default on; the tray menu has the same switch).
   const [keepAwake, setKeepAwake] = useState(true);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  // The app's own version (tauri.conf.json), so a release changes it in one place only.
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -182,19 +193,19 @@ export default function HomeScreen({ onStart }: Props) {
       {/* Footer */}
       <footer className="home-footer">
         <div className="home-version-row">
-          <span className="home-version">v0.5.9</span>
+          {appVersion && <span className="home-version">v{appVersion}</span>}
           <button className="home-check-update" onClick={manualCheckUpdate} disabled={checkingUpdate}>
             {checkingUpdate ? "Checking…" : "Check for updates"}
           </button>
         </div>
         <div className="home-links">
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Help</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Privacy</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Terms</a>
-          <span className="home-dot">·</span>
-          <a className="home-link" href="#" onClick={(e) => e.preventDefault()}>Website</a>
+          {/* Opened in the browser. Terms joins once its page is on the website (after the legal review). */}
+          {FOOTER_LINKS.map(([label, url], i) => (
+            <span key={url}>
+              {i > 0 && <span className="home-dot">·</span>}
+              <a className="home-link" href={url} onClick={(e) => { e.preventDefault(); openUrl(url).catch(() => {}); }}>{label}</a>
+            </span>
+          ))}
         </div>
       </footer>
     </div>

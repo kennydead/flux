@@ -1,0 +1,20 @@
+# Flux AI's own tests on a real Windows machine (owner 2026-11-20, before 1.0.0): above all the hardware id
+# for licence seats (reg query MachineGuid), which only runs on Windows. Run by pushing to windows-test.
+name: Windows unit tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-test]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Hardware id for licence seats (machine_id.rs on its own; see .github/machine-id-check)
+        working-directory: .github/machine-id-check
+        run: cargo test -- --nocapture

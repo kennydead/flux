@@ -48,7 +48,7 @@ export default function RunningScreen({ onBack }: Props) {
         return;
       }
       if (d.type !== "desktop-notification") return;
-      invoke<boolean>("desktop_notify", { title: d.title ?? "Agent Farm", body: d.body ?? "" })
+      invoke<boolean>("desktop_notify", { title: d.title ?? "Flux AI", body: d.body ?? "" })
         .then((shown) => { if (shown && d.path) pendingPath.current = { path: d.path, at: Date.now() }; })
         .catch(() => {});
     };

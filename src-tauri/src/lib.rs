@@ -10,6 +10,7 @@ mod pull;
 mod registry;
 mod updates;
 mod keep_awake;
+mod machine_id;
 
 const FARM_VERSION: &str = "latest";
 const IMAGE_REGISTRY: &str = "ghcr.io/kennydead/claude-agent-farm";
@@ -181,6 +182,10 @@ async fn validate_license_key(key: String) -> Result<bool, String> {
             Err(ureq::Error::Status(code, _)) if code >= 500 => {
                 Err("The license server is having trouble right now. Please try again in a minute.".to_string())
             }
+            // Too many attempts from this network (the licence server's limit for unknown keys): not "invalid".
+            Err(ureq::Error::Status(429, _)) => {
+                Err("Too many licence checks from this network. Please wait a while and try again.".to_string())
+            }
             Err(ureq::Error::Status(_, _)) => Ok(false),
             Err(e) => Err(format!("Could not verify license key. Check your internet connection.\n\nDetails: {e}")),
         }
@@ -193,6 +198,7 @@ async fn validate_license_key(key: String) -> Result<bool, String> {
 fn save_license_key(key: String) -> Result<(), String> {
     let logs = farm_dir().join("logs");
     std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
+    machine_id::write_machine_file();   // before the farm's first start takes a seat with it
     std::fs::write(logs.join("license_key.txt"), key.trim()).map_err(|e| e.to_string())
 }
 
@@ -1234,6 +1240,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             migrate_legacy_autostart(app.handle());
+            // The farm's licence seat is tied to this computer (logs/machine.json).
+            std::thread::spawn(machine_id::write_machine_file);
             if let Ok(dir) = app.path().app_data_dir() {
                 docker_env::set_app_data_dir(dir);
                 docker_env::sweep_temp_login_configs();
