@@ -182,6 +182,10 @@ async fn validate_license_key(key: String) -> Result<bool, String> {
             Err(ureq::Error::Status(code, _)) if code >= 500 => {
                 Err("The license server is having trouble right now. Please try again in a minute.".to_string())
             }
+            // Too many attempts from this network (the licence server's limit for unknown keys): not "invalid".
+            Err(ureq::Error::Status(429, _)) => {
+                Err("Too many licence checks from this network. Please wait a while and try again.".to_string())
+            }
             Err(ureq::Error::Status(_, _)) => Ok(false),
             Err(e) => Err(format!("Could not verify license key. Check your internet connection.\n\nDetails: {e}")),
         }
