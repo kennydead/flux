@@ -71,6 +71,13 @@ pub enum Answer {
 }
 
 static CACHE: Mutex<Option<(Login, Instant)>> = Mutex::new(None);
+/// Whether the last question reached the licence server (audit 2026-11-23: a refused pull while it was down must
+/// not throw the saved login away — our registry can't check logins then either).
+static REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn server_reached() -> bool {
+    REACHED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The `registry` part of a license-server answer, when it carries a usable login.
 #[cfg(test)]
@@ -128,6 +135,13 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// The host of the saved login whatever its age (cleanup: an old login must go from the docker config too).
+fn saved_host_any_age() -> Option<String> {
+    let raw = std::fs::read_to_string(saved_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("host").and_then(|h| h.as_str()).filter(|h| plausible_host(h)).map(String::from)
+}
+
 fn load_saved() -> Option<Login> {
     let raw = std::fs::read_to_string(saved_path()).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -152,8 +166,8 @@ fn save(login: &Login) {
 /// Remove the login everywhere (saved file, isolated docker config, this session). Also on reset.
 pub fn forget() {
     let mut hosts = vec![HOST.to_string()];
-    if let Some(l) = load_saved() {
-        hosts.push(l.host);
+    if let Some(h) = saved_host_any_age() {
+        hosts.push(h);
     }
     if let Ok(mut g) = CACHE.lock() {
         if let Some((l, _)) = g.take() {
@@ -169,7 +183,7 @@ pub fn forget() {
 
 fn remember(login: &Login) {
     // A login that moved to another host (ghcr.io → our registry) leaves nothing behind at the old one.
-    let old = load_saved().map(|l| l.host).filter(|h| *h != login.host);
+    let old = saved_host_any_age().filter(|h| *h != login.host);
     save(login);
     if let Some(h) = old {
         crate::docker_env::set_registry_auth(&h, None);
@@ -194,7 +208,9 @@ pub fn ensure() -> Option<Login> {
         forget();   // no license on this machine (reset) → no login
         return None;
     };
-    match ask_license_server(&key) {
+    let answer = ask_license_server(&key);
+    REACHED.store(answer.is_some(), std::sync::atomic::Ordering::Relaxed);
+    match answer {
         Some(Answer::Login(login)) => {
             remember(&login);
             Some(login)

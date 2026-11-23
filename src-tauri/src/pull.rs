@@ -466,7 +466,9 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
                         login = fresh;
                         r = pull_api(d, img, &mut tracker, login.as_ref()).await;
                     }
-                    if matches!(&r, Err(e) if is_auth_error(e)) {
+                    // Only a licence server that answered makes a refused login worthless; while it can't be
+                    // reached the saved login is kept (our registry can't check logins then either).
+                    if matches!(&r, Err(e) if is_auth_error(e)) && crate::registry::server_reached() {
                         eprintln!("[flux] the registry login was refused; pulling {img} without it");
                         let _ = tauri::async_runtime::spawn_blocking(crate::registry::forget).await;
                         login = None;
@@ -490,7 +492,8 @@ pub async fn pull_images(app: Option<AppHandle>, images: Vec<String>) -> Result<
                 let mut r = tauri::async_runtime::spawn_blocking(move || pull_cli(&img2, login2.as_ref()))
                     .await
                     .map_err(|e| e.to_string())?;
-                if matches!(&r, Err(e) if is_auth_error(e)) && login.is_some() && img.starts_with("ghcr.io/") {
+                if matches!(&r, Err(e) if is_auth_error(e)) && login.is_some() && img.starts_with("ghcr.io/")
+                    && crate::registry::server_reached() {
                     eprintln!("[flux] the registry login was refused; pulling {img} without it");
                     let _ = tauri::async_runtime::spawn_blocking(crate::registry::forget).await;
                     login = None;
