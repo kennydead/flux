@@ -24,6 +24,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const HOST: &str = "ghcr.io";
+/// Our registry, the only other place Flux downloads from (owner 2026-11-23): a licence answer naming any other
+/// host is ignored, so even a fake licence server can't send downloads elsewhere. Moving the registry = a Flux release.
+pub const OUR_REGISTRY: &str = "registry.flux-ai.si";
 const FRESH_FOR: Duration = Duration::from_secs(30 * 60);
 const SAVED: &str = "registry-login.json";
 /// How long a saved login stands in for the license server (a blocked server must not keep a revoked
@@ -97,7 +100,7 @@ pub fn classify(body: &serde_json::Value) -> Answer {
     let own = reg.and_then(|r| r.get("v")).and_then(|v| v.as_u64()) == Some(2)
         && reg.and_then(|r| r.get("mirror_of")).and_then(|v| v.as_str()) == Some(HOST);
     let host = match get("host") {
-        Some(h) if own && plausible_host(&h) => h,
+        Some(h) if own && h == OUR_REGISTRY => h,
         _ => HOST.to_string(),
     };
     match (get("username"), get("token")) {
@@ -150,7 +153,7 @@ fn load_saved() -> Option<Login> {
         return None;
     }
     let (u, t) = (v.get("username")?.as_str()?, v.get("token")?.as_str()?);
-    let host = v.get("host").and_then(|h| h.as_str()).filter(|h| plausible_host(h)).unwrap_or(HOST);
+    let host = v.get("host").and_then(|h| h.as_str()).filter(|h| *h == OUR_REGISTRY).unwrap_or(HOST);
     (!u.is_empty() && !t.is_empty()).then(|| Login { username: u.into(), token: t.into(), host: host.into() })
 }
 
@@ -319,6 +322,7 @@ mod tests {
             serde_json::json!({"host": "registry.flux-ai.si", "username": "u", "token": "t"}),                       // no v: 2
             serde_json::json!({"v": 2, "host": "registry.flux-ai.si", "mirror_of": "docker.io", "username": "u", "token": "t"}),
             serde_json::json!({"v": 2, "host": "evil.example/../x", "mirror_of": "ghcr.io", "username": "u", "token": "t"}),
+            serde_json::json!({"v": 2, "host": "registry.evil.example", "mirror_of": "ghcr.io", "username": "u", "token": "t"}),
         ] {
             let l = from_answer(&serde_json::json!({"valid": true, "registry": reg})).unwrap();
             assert_eq!(l.host, HOST);
