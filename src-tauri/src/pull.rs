@@ -14,7 +14,7 @@
 //! the CLI (with the isolated docker config) — the old behaviour, without a bar.
 
 use bollard::auth::DockerCredentials;
-use bollard::query_parameters::CreateImageOptionsBuilder;
+use bollard::query_parameters::{CreateImageOptionsBuilder, TagImageOptionsBuilder};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -69,25 +69,31 @@ fn short_name(image: &str) -> String {
     name.rsplit('/').next().unwrap_or(&name).to_string()
 }
 
-/// Layer sizes from ghcr.io (a pull token with the license's login, else anonymous). Blocking.
+/// Layer sizes from the registry: our registry with the licence's own login (plain Basic auth), or ghcr.io (a pull
+/// token with the licence's login, else anonymous). Blocking.
 fn fetch_remote(image: &str, os: &str, arch: &str, login: Option<&crate::registry::Login>) -> Option<RemoteImage> {
     let (name, tag) = split_ref(image);
     let repo = name.strip_prefix("ghcr.io/")?;
     let timeout = Duration::from_secs(8);
-    let token_url = format!("https://ghcr.io/token?scope=repository:{repo}:pull");
-    let ask = |login: Option<&crate::registry::Login>| -> Option<serde_json::Value> {
-        let mut req = ureq::get(&token_url).timeout(timeout);
-        if let Some(l) = login {
-            req = req.set("Authorization", &crate::registry::basic_auth(l));
-        }
-        req.call().ok()?.into_json().ok()
+    let mirror = login.filter(|l| l.host != crate::registry::HOST);
+    let (base_host, auth) = if let Some(l) = mirror {
+        (l.host.clone(), crate::registry::basic_auth(l))
+    } else {
+        let token_url = format!("https://ghcr.io/token?scope=repository:{repo}:pull");
+        let ask = |login: Option<&crate::registry::Login>| -> Option<serde_json::Value> {
+            let mut req = ureq::get(&token_url).timeout(timeout);
+            if let Some(l) = login {
+                req = req.set("Authorization", &crate::registry::basic_auth(l));
+            }
+            req.call().ok()?.into_json().ok()
+        };
+        // A rejected login (rotated) → anonymously, which works while the images are public.
+        let token = ask(login).or_else(|| login.and_then(|_| ask(None)))?;
+        (crate::registry::HOST.to_string(), format!("Bearer {}", token["token"].as_str()?))
     };
-    // A rejected login (rotated) → anonymously, which works while the images are public.
-    let token = ask(login).or_else(|| login.and_then(|_| ask(None)))?;
-    let auth = format!("Bearer {}", token["token"].as_str()?);
     let accept = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
     let get = |reference: &str| -> Option<(Option<String>, serde_json::Value)> {
-        let resp = ureq::get(&format!("https://ghcr.io/v2/{repo}/manifests/{reference}"))
+        let resp = ureq::get(&format!("https://{base_host}/v2/{repo}/manifests/{reference}"))
             .set("Authorization", &auth)
             .set("Accept", accept)
             .timeout(timeout)
@@ -258,11 +264,14 @@ async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker,
                   login: Option<&crate::registry::Login>) -> Result<bool, String> {
     let before = docker.inspect_image(image).await.ok().and_then(|i| i.id);
     let (name, tag) = split_ref(image);
-    let opts = CreateImageOptionsBuilder::default().from_image(&name).tag(&tag).build();
+    // Through our registry when the licence's login is for it (2026-11-23); named back to `image` below.
+    let src = login.map(|l| l.source(image)).unwrap_or_else(|| image.to_string());
+    let (src_name, _) = split_ref(&src);
+    let opts = CreateImageOptionsBuilder::default().from_image(&src_name).tag(&tag).build();
     let creds = login.filter(|_| name.starts_with("ghcr.io/")).map(|l| DockerCredentials {
         username: Some(l.username.clone()),
         password: Some(l.token.clone()),
-        serveraddress: Some(crate::registry::HOST.to_string()),
+        serveraddress: Some(l.host.clone()),
         ..Default::default()
     });
     let mut stream = docker.create_image(Some(opts), None, creds);
@@ -286,6 +295,12 @@ async fn pull_api(docker: &Docker, image: &str, tracker: &mut Tracker,
             .unwrap_or((None, None));
         tracker.update(info.id.as_deref().unwrap_or(""), &status, cur, tot);
         tracker.emit("pulling", &short, false);
+    }
+    if src != image {
+        // The usual ghcr.io name for everything else (compose, agents); the download name stays, since docker
+        // records the digest the update check compares under it.
+        let t = TagImageOptionsBuilder::default().repo(&name).tag(&tag).build();
+        docker.tag_image(&src, Some(t)).await.map_err(|e| format!("could not name {short}: {e}"))?;
     }
     let after = docker.inspect_image(image).await.ok().and_then(|i| i.id);
     Ok(match (before, after) {
@@ -318,9 +333,10 @@ fn pull_cli(image: &str, login: Option<&crate::registry::Login>) -> Result<bool,
         None => true,
         Some(h) => h.starts_with("unix://") || h.starts_with("npipe://"),
     };
+    let src = login.map(|l| l.source(image)).unwrap_or_else(|| image.to_string());
     let temp = match login {
         Some(l) if image.starts_with("ghcr.io/") && env.config_dir.is_none() && local_endpoint => {
-            crate::docker_env::temp_login_config(crate::registry::HOST, &crate::registry::auth_b64(l))
+            crate::docker_env::temp_login_config(&l.host, &crate::registry::auth_b64(l))
         }
         _ => None,
     };
@@ -330,11 +346,19 @@ fn pull_cli(image: &str, login: Option<&crate::registry::Login>) -> Result<bool,
             cmd.env("DOCKER_HOST", h);
         }
     }
-    let output = cmd.args(["pull", image]).output();
+    let output = cmd.args(["pull", &src]).output();
     if let Some(dir) = &temp {
         let _ = std::fs::remove_dir_all(dir);
     }
     let output = output.map_err(|e| format!("Failed to pull {image}: {e}"))?;
+    if output.status.success() && src != image {
+        // Our registry's copy: also give it the usual ghcr.io name (see pull_api).
+        let tagged = crate::docker_command().args(["tag", &src, image]).output()
+            .map_err(|e| format!("Failed to name {image}: {e}"))?;
+        if !tagged.status.success() {
+            return Err(String::from_utf8_lossy(&tagged.stderr).into_owned());
+        }
+    }
     if output.status.success() {
         let combined = format!(
             "{}{}",

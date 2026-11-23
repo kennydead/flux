@@ -14,6 +14,11 @@
 //! (pull.rs). The user never sees or types any of this.
 //! (Audit 2026-11-06: `docker login` went to the macOS keychain and to the user's own config on
 //! Windows, the isolated config's rewrite on every start wiped it, and it had no timeout.)
+//!
+//! Since 2026-11-23 (owner: a download login per licence) Flux asks for its licence's OWN login (`registry: 2`).
+//! A new licence server answers with our registry (`host`, a mirror of ghcr.io): images are downloaded from there
+//! and also given their usual ghcr.io names (pull.rs), so nothing else changes. An older server's answer still
+//! means the shared ghcr.io login.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,11 +34,29 @@ const SAVED_FOR: Duration = Duration::from_secs(14 * 24 * 3600);
 pub struct Login {
     pub username: String,
     pub token: String,
+    /// Where the login works: HOST itself, or our registry (a mirror of HOST).
+    pub host: String,
+}
+
+impl Login {
+    /// Where to download a ghcr.io image from: our registry's copy when the login is for it, else the image itself.
+    pub fn source(&self, image: &str) -> String {
+        match image.strip_prefix("ghcr.io/") {
+            Some(rest) if self.host != HOST => format!("{}/{rest}", self.host),
+            _ => image.to_string(),
+        }
+    }
+}
+
+/// A registry host name we accept from the licence server ("name.tld" or "name:port").
+fn plausible_host(h: &str) -> bool {
+    !h.is_empty() && h.len() <= 253 && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':')
+        && !h.starts_with('.') && !h.starts_with('-')
 }
 
 impl std::fmt::Debug for Login {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Login {{ username: {:?}, token: <redacted> }}", self.username)
+        write!(f, "Login {{ username: {:?}, token: <redacted>, host: {:?} }}", self.username, self.host)
     }
 }
 
@@ -63,8 +86,15 @@ pub fn classify(body: &serde_json::Value) -> Answer {
         return Answer::Invalid;
     }
     let get = |k: &str| body.get("registry").and_then(|r| r.get(k)).and_then(|v| v.as_str()).map(|v| v.trim().to_string());
+    let reg = body.get("registry");
+    let own = reg.and_then(|r| r.get("v")).and_then(|v| v.as_u64()) == Some(2)
+        && reg.and_then(|r| r.get("mirror_of")).and_then(|v| v.as_str()) == Some(HOST);
+    let host = match get("host") {
+        Some(h) if own && plausible_host(&h) => h,
+        _ => HOST.to_string(),
+    };
     match (get("username"), get("token")) {
-        (Some(username), Some(token)) if !username.is_empty() && !token.is_empty() => Answer::Login(Login { username, token }),
+        (Some(username), Some(token)) if !username.is_empty() && !token.is_empty() => Answer::Login(Login { username, token, host }),
         _ => Answer::NoLogin,
     }
 }
@@ -79,7 +109,7 @@ fn license_key() -> Option<String> {
 fn ask_license_server(key: &str) -> Option<Answer> {
     let res = match ureq::post(crate::LICENSE_ENDPOINT)
         .timeout(Duration::from_secs(8))
-        .send_json(serde_json::json!({ "key": key }))
+        .send_json(serde_json::json!({ "key": key, "registry": 2 }))
     {
         Ok(r) => r,
         // Any HTTP error is the server's problem, not a verdict: a misdeployed function once answered
@@ -106,13 +136,14 @@ fn load_saved() -> Option<Login> {
         return None;
     }
     let (u, t) = (v.get("username")?.as_str()?, v.get("token")?.as_str()?);
-    (!u.is_empty() && !t.is_empty()).then(|| Login { username: u.into(), token: t.into() })
+    let host = v.get("host").and_then(|h| h.as_str()).filter(|h| plausible_host(h)).unwrap_or(HOST);
+    (!u.is_empty() && !t.is_empty()).then(|| Login { username: u.into(), token: t.into(), host: host.into() })
 }
 
 fn save(login: &Login) {
     let dir = crate::docker_env::data_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let body = serde_json::json!({ "username": login.username, "token": login.token, "saved_at": now_secs() }).to_string();
+    let body = serde_json::json!({ "username": login.username, "token": login.token, "host": login.host, "saved_at": now_secs() }).to_string();
     if let Err(e) = crate::docker_env::write_private(&saved_path(), &body) {
         eprintln!("[flux] could not save the registry login: {e}");
     }
@@ -120,16 +151,30 @@ fn save(login: &Login) {
 
 /// Remove the login everywhere (saved file, isolated docker config, this session). Also on reset.
 pub fn forget() {
-    let _ = std::fs::remove_file(saved_path());
-    crate::docker_env::set_registry_auth(HOST, None);
+    let mut hosts = vec![HOST.to_string()];
+    if let Some(l) = load_saved() {
+        hosts.push(l.host);
+    }
     if let Ok(mut g) = CACHE.lock() {
-        *g = None;
+        if let Some((l, _)) = g.take() {
+            hosts.push(l.host);
+        }
+    }
+    let _ = std::fs::remove_file(saved_path());
+    hosts.dedup();
+    for h in hosts {
+        crate::docker_env::set_registry_auth(&h, None);
     }
 }
 
 fn remember(login: &Login) {
+    // A login that moved to another host (ghcr.io → our registry) leaves nothing behind at the old one.
+    let old = load_saved().map(|l| l.host).filter(|h| *h != login.host);
     save(login);
-    crate::docker_env::set_registry_auth(HOST, Some(&auth_b64(login)));
+    if let Some(h) = old {
+        crate::docker_env::set_registry_auth(&h, None);
+    }
+    crate::docker_env::set_registry_auth(&login.host, Some(&auth_b64(login)));
     if let Ok(mut g) = CACHE.lock() {
         *g = Some((login.clone(), Instant::now()));
     }
@@ -214,7 +259,7 @@ mod tests {
     #[test]
     fn a_valid_answer_with_a_login() {
         let body = serde_json::json!({"valid": true, "registry": {"host": "ghcr.io", "username": "kennydead", "token": "ghp_x"}});
-        assert_eq!(from_answer(&body), Some(Login { username: "kennydead".into(), token: "ghp_x".into() }));
+        assert_eq!(from_answer(&body), Some(Login { username: "kennydead".into(), token: "ghp_x".into(), host: "ghcr.io".into() }));
     }
 
     #[test]
@@ -228,7 +273,7 @@ mod tests {
 
     #[test]
     fn the_token_never_prints() {
-        let l = Login { username: "kennydead".into(), token: "ghp_secret".into() };
+        let l = Login { username: "kennydead".into(), token: "ghp_secret".into(), host: HOST.into() };
         let shown = format!("{l:?} {:?}", Answer::Login(l.clone()));
         assert!(!shown.contains("ghp_secret") && shown.contains("kennydead"));
     }
@@ -243,8 +288,31 @@ mod tests {
     }
 
     #[test]
+    fn a_licence_server_with_our_registry_gives_its_host() {
+        let body = serde_json::json!({"valid": true, "registry": {"v": 2, "host": "registry.flux-ai.si", "mirror_of": "ghcr.io",
+                                                                  "username": "lic-0123", "token": "t"}});
+        let l = from_answer(&body).unwrap();
+        assert_eq!(l.host, "registry.flux-ai.si");
+        assert_eq!(l.source("ghcr.io/kennydead/claude-agent-farm/agent:latest"), "registry.flux-ai.si/kennydead/claude-agent-farm/agent:latest");
+        assert_eq!(l.source("postgres:16-alpine"), "postgres:16-alpine");
+    }
+
+    #[test]
+    fn only_a_proper_answer_moves_the_downloads() {
+        for reg in [
+            serde_json::json!({"host": "registry.flux-ai.si", "username": "u", "token": "t"}),                       // no v: 2
+            serde_json::json!({"v": 2, "host": "registry.flux-ai.si", "mirror_of": "docker.io", "username": "u", "token": "t"}),
+            serde_json::json!({"v": 2, "host": "evil.example/../x", "mirror_of": "ghcr.io", "username": "u", "token": "t"}),
+        ] {
+            let l = from_answer(&serde_json::json!({"valid": true, "registry": reg})).unwrap();
+            assert_eq!(l.host, HOST);
+            assert_eq!(l.source("ghcr.io/kennydead/claude-agent-farm/agent:latest"), "ghcr.io/kennydead/claude-agent-farm/agent:latest");
+        }
+    }
+
+    #[test]
     fn basic_auth_is_standard_base64() {
-        let l = Login { username: "Aladdin".into(), token: "open sesame".into() };
+        let l = Login { username: "Aladdin".into(), token: "open sesame".into(), host: HOST.into() };
         assert_eq!(basic_auth(&l), "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
         assert_eq!(base64(b"a"), "YQ==");
         assert_eq!(base64(b"ab"), "YWI=");
