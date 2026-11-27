@@ -17,12 +17,14 @@ if [ -n "$KEY" ] && { ! command -v curl >/dev/null 2>&1 || ! command -v python3 
 elif [ -n "$KEY" ]; then
     # The body is built by python (a key with quotes stays valid JSON) and sent on stdin (not in curl's argv).
     # The answer becomes "valid [user token]" or nothing.
-    ANSWER="$(KEY="$KEY" python3 -c 'import json,os; print(json.dumps({"key": os.environ["KEY"]}))' \
+    # registry: 2 = this licence's own login for our registry (a mirror of ghcr.io, 2026-11-23): "valid user token host".
+    ANSWER="$(KEY="$KEY" python3 -c 'import json,os; print(json.dumps({"key": os.environ["KEY"], "registry": 2}))' \
         | curl -fsS -m 10 -X POST -H 'Content-Type: application/json' --data @- "$LICENSE_ENDPOINT" 2>/dev/null \
         | python3 -c 'import json,sys
 d=json.load(sys.stdin); r=d.get("registry") or {}
 if d.get("valid") is True:
-    print("valid " + r["username"] + " " + r["token"] if r.get("username") and r.get("token") else "valid")' 2>/dev/null || true)"
+    print("valid " + r["username"] + " " + r["token"] + " " + ("registry.flux-ai.si" if r.get("v") == 2 and r.get("mirror_of") == "ghcr.io" and r.get("host") == "registry.flux-ai.si" else "ghcr.io")
+          if r.get("username") and r.get("token") else "valid")' 2>/dev/null || true)"
     if [ -n "$ANSWER" ] && [ -n "${LICENSE_KEY:-}" ]; then
         # The farm itself reads the key from this file: save the one that just worked.
         ( umask 077; printf %s "$KEY" > logs/license_key.txt ) 2>/dev/null \
@@ -30,13 +32,17 @@ if d.get("valid") is True:
     fi
     LOGIN="${ANSWER#valid}"; LOGIN="${LOGIN# }"
     if [ -n "$LOGIN" ]; then
-        printf %s "${LOGIN#* }" | docker login ghcr.io -u "${LOGIN%% *}" --password-stdin >/dev/null \
+        set -- $LOGIN   # user token host
+        REGISTRY_HOST="$3"
+        # Our registry now: the old shared GitHub login (an earlier start) goes from docker's config.
+        [ "$REGISTRY_HOST" != "ghcr.io" ] && docker logout ghcr.io >/dev/null 2>&1 || true
+        printf %s "$2" | docker login "$REGISTRY_HOST" -u "$1" --password-stdin >/dev/null \
             && echo "Logged in to the farm's image registry." \
             || echo "Could not log in to the image registry — trying without a login."
     elif [ -z "$ANSWER" ]; then
         echo "The license key could not be confirmed right now — pulling without a new login."
     fi
-    unset ANSWER LOGIN
+    unset ANSWER LOGIN; set --
 else
     echo "No license key found — pulling without a login. Set it with: LICENSE_KEY=<your key> ./start.sh"
 fi
@@ -59,6 +65,14 @@ pull_anonymously() {
 echo "Pulling latest images..."
 for img in agent dashboard-backend dashboard-frontend; do
     ref="ghcr.io/kennydead/claude-agent-farm/$img:latest"
+    if [ -n "${REGISTRY_HOST:-}" ] && [ "$REGISTRY_HOST" != "ghcr.io" ]; then
+        # From our registry's copy, then named as the compose file expects.
+        src="$REGISTRY_HOST/kennydead/claude-agent-farm/$img:latest"
+        docker pull "$src" && docker tag "$src" "$ref" && continue
+        echo "Could not download the farm's images from the Flux AI registry (see the message above)."
+        echo "Check the internet connection, that Docker is running, and that the license is active."
+        exit 1
+    fi
     docker pull "$ref" || pull_anonymously "$ref" || {
         echo "Could not download the farm's images (see the message above)."
         echo "Check the internet connection and that Docker is running. The images need a valid license key:"
